@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 import time
 import sys
 
@@ -280,6 +281,7 @@ def evaluate_classifier_model(model, X_test, y_test, show_plots=False):
     else:
         # Save the figure.
         outputs_dir = os.path.abspath("./outputs")
+        Path(outputs_dir).mkdir(parents=True, exist_ok=True)
         plot_filename = f"single_character_performance_{model_str}.png"
         plot_filepath = os.path.join(outputs_dir, plot_filename)
         plt.savefig(plot_filepath)
