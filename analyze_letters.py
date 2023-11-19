@@ -278,7 +278,7 @@ def organize_data(data_dicts):
     X_train, X_test, y_train, y_test = train_test_split(
         input_vectors,
         labels,
-        test_size=0.1,
+        test_size=0.2,
         shuffle=True,
     )
     # Convert the characters to ints, for compatibility with all model libraries.
@@ -328,17 +328,20 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
     # Define hyperparameters of the model.
     NUM_FEATURES = X_train.shape[1]
     NUM_HIDDEN_LAYER_0 = 64
+    NUM_HIDDEN_LAYER_1 = 64
     NUM_CLASSES = len(ALL_CHARS)
 
     # Define the model.
-    # model = torch.nn.Sequential(
-    #     torch.nn.Linear(NUM_FEATURES, NUM_HIDDEN_LAYER_0),
-    #     torch.nn.ReLU(),
-    #     torch.nn.Linear(NUM_HIDDEN_LAYER_0, NUM_CLASSES),
-    # )
     model = torch.nn.Sequential(
-        torch.nn.Linear(NUM_FEATURES, NUM_CLASSES),
+        torch.nn.Linear(NUM_FEATURES, NUM_HIDDEN_LAYER_0),
+        torch.nn.ReLU(),
+        torch.nn.Linear(NUM_HIDDEN_LAYER_0, NUM_HIDDEN_LAYER_1),
+        torch.nn.ReLU(),
+        torch.nn.Linear(NUM_HIDDEN_LAYER_0, NUM_CLASSES),
     )
+    # model = torch.nn.Sequential(
+    #     torch.nn.Linear(NUM_FEATURES, NUM_CLASSES),
+    # )
 
     # Visualize the model and save the image to disk.
     torchview.draw_graph(
@@ -353,27 +356,40 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
 
     # Define hyperparameters of the training process.
     NUM_SAMPLES = X_train.shape[0]
-    NUM_EPOCHS = 500
-    BATCH_SIZE = 50
+    VALIDATION_PORTION = 0.2
+    TRAINING_PORTION = 1 - VALIDATION_PORTION
+    NUM_TRAINING_SAMPLES = int(NUM_SAMPLES * TRAINING_PORTION)
+    NUM_EPOCHS = 5000
+    BATCH_SIZE = NUM_SAMPLES  # batch is whole epoch. no mini-batching necessary yet.
     LEARNING_RATE = 10e-6
     MOMENTUM = 0.9
-    LOG_EVERY_NUM_BATCHES = 50
 
     # Define components of the training process.
     loss_function = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
 
-    epoch_losses = []
+    epoch_train_accuracies = []
+    epoch_validation_accuracies = []
 
     # Run multiple epochs of training.
     for epoch_idx in range(NUM_EPOCHS):
         # Shuffle the training data for this epoch.
         random_order = torch.randperm(NUM_SAMPLES)
-        epoch_X_train, epoch_y_train = X_train[random_order], y_train[random_order]
+        X_train_shuffled = X_train[random_order]
+        y_train_shuffled = y_train[random_order]
 
-        # For each epoch, run multiple batches.
-        running_loss = 0
-        samples_in_loss = 0
+        # Split the shuffled data for this epoch into training and validation sets.
+        epoch_X_train = X_train_shuffled[:NUM_TRAINING_SAMPLES]
+        epoch_X_validation = X_train_shuffled[NUM_TRAINING_SAMPLES:]
+        epoch_y_train = y_train_shuffled[:NUM_TRAINING_SAMPLES]
+        epoch_y_validation = y_train_shuffled[NUM_TRAINING_SAMPLES:]
+
+        # Keep track of the total and correct samples in this epoch, for calculating
+        # accuracy on the training data.
+        epoch_train_samples = 0
+        epoch_train_samples_correct = 0
+
+        # Run the specified batches for this epoch (may be 1 batch, or many).
         num_batches = int(NUM_SAMPLES / BATCH_SIZE)
         for batch_idx in range(num_batches):
             # Get the samples for this batch.
@@ -381,6 +397,9 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
             batch_end_idx = BATCH_SIZE * (batch_idx + 1)
             batch_X_train = epoch_X_train[batch_start_idx:batch_end_idx]
             batch_y_train = epoch_y_train[batch_start_idx:batch_end_idx]
+
+            # Zero the parameters' gradients before training on the new batch of data.
+            model.zero_grad()
 
             # Use the model to predict outputs for this batch.
             batch_y_pred = model(batch_X_train)
@@ -395,32 +414,38 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
             optimizer.step()
 
             # Keep track of and log progress and stats during training.
-            running_loss += batch_loss.item()
-            samples_in_loss += BATCH_SIZE
-            if batch_idx % LOG_EVERY_NUM_BATCHES == 0:
-                print(
-                    f"epoch: {epoch_idx}\t"
-                    f"batch: {batch_idx}\t"
-                    f"loss: {round(running_loss / samples_in_loss, 8):.8f};"
-                )
+            epoch_train_samples += len(batch_y_pred)
+            epoch_train_samples_correct += len(batch_y_pred == batch_y_train)
 
-        # Keep track of the loss in each epoch to plot it.
-        samples_in_loss = BATCH_SIZE * (batch_idx + 1)
-        epoch_loss = running_loss / samples_in_loss
-        epoch_losses.append(epoch_loss)
+        epoch_train_accuracy = epoch_train_samples_correct / epoch_train_samples
+        epoch_train_accuracies.append(epoch_train_accuracy)
 
-    print(f"Trained neural network model in {round(time.time() - s)} sec.")
+        with torch.no_grad():
+            epoch_y_pred_validation = model(epoch_X_validation)
+            epoch_validation_samples = len(epoch_y_pred_validation)
+            epoch_validation_samples_correct = len(
+                epoch_y_pred_validation == epoch_y_validation
+            )
+            epoch_validation_accuracy = (
+                epoch_validation_samples_correct / epoch_validation_samples
+            )
+            epoch_validation_accuracies.append(epoch_validation_accuracy)
+
+        print(
+            f"{round(time.time() - s, 2)} sec\t"
+            f"train accuracy: {round(epoch_train_accuracy, 4)}\t"
+            f"validation accuracy: {round(epoch_validation_accuracy, 4)}\t"
+        )
 
     ## Plot the loss over the course of the training.
 
     fig, ax = plt.subplots()
 
-    ax.plot(epoch_losses)
+    ax.plot(epoch_train_accuracies, label="train")
+    ax.plot(epoch_validation_accuracies, label="validation")
 
     ax.set_xlabel("epoch")
-
-    ax.set_ylabel("loss per sample")
-    ax.set_yscale("log")
+    ax.set_ylabel("accuracy")
 
     plt.tight_layout()
 
