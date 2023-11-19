@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import time
 import sys
+import string
 
 from dateutil.parser import parse as dtparse
 import numpy as np
@@ -11,11 +12,26 @@ from scipy.ndimage import gaussian_filter1d
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
+import torch
+import torchview
 from sklearn.metrics import confusion_matrix
 from matplotlib import pyplot as plt
 
 MATPLOTLIB_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
+ALL_CHARS = [
+    "doNothing",
+    *string.ascii_lowercase,
+    "greaterThan",
+    "tilde",
+    "questionMark",
+    "apostrophe",
+    "comma",
+]
+CHAR_TO_CLASS_MAP = {char: idx for idx, char in enumerate(ALL_CHARS)}
+CLASS_TO_CHAR_MAP = {idx: char for idx, char in enumerate(ALL_CHARS)}
+
+OUTPUTS_DIR = os.path.abspath("./outputs")
 
 ########################################################################################
 # Main function.
@@ -24,30 +40,77 @@ MATPLOTLIB_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--show_plots", action="store_true")
+    parser.add_argument("--visualize_neural", action="store_true")
+    parser.add_argument("--run_linear", action="store_true")
+    parser.add_argument("--run_nn", action="store_true")
+    parser.add_argument("--save_plots", action="store_true")
     args = parser.parse_args()
-    show_plots = args.show_plots
+    visualize_neural = args.visualize_neural
+    run_linear = args.run_linear
+    run_nn = args.run_nn
+    save_plots = args.save_plots
 
     ## Load the data.
 
     data_dicts = load_data()
 
-    # ## Visualize the neural data.
+    if visualize_neural:
+        ## Visualize the neural data.
 
-    # visualize_neural_data(data_dicts)
-    # return
+        visualize_neural_data(data_dicts)
 
     ## Create labeled pairs.
 
     X_train, X_test, y_train, y_test = organize_data(data_dicts)
 
-    ## Train a classifier model.
+    if run_linear:
+        ## Train a logistic regression classifier model.
 
-    model = train_classifier_model(X_train, y_train)
+        logistic_regression_model = train_logistic_regression_classifier(
+            X_train, y_train
+        )
 
-    ## Evaluate the classifier model.
+        ## Evaluate the logistic regression classifier model.
 
-    evaluate_classifier_model(model, X_test, y_test, show_plots=show_plots)
+        evaluate_classifier_model(
+            model_name="LogisticRegression",
+            predict=logistic_regression_model.predict,
+            X_test=X_test,
+            y_test=y_test,
+            save_plots=save_plots,
+        )
+
+    if run_nn:
+        ## Train a neural network classifier model.
+
+        neural_network_model = train_neural_network_classifier(
+            X_train,
+            y_train,
+            save_plots=save_plots,
+        )
+
+        ## Evaluate the neural network classifier model.
+
+        # Wrap the prediction function for compatibility with the common evaluation
+        # function.
+        def neural_network_predict(X):
+            """"""
+            # Convert numpy arrays to tensors to work with the neural network model.
+            X = torch.from_numpy(X).float()
+            # Use the neural network model to make a prediction.
+            y_pred_1hot = neural_network_model(X)
+            # The neural network model returns 1-hot vectors, so convert them to char
+            # class indices by getting the index of the non-zero element.
+            y_pred = np.argmax(y_pred_1hot.detach().numpy(), axis=1)
+            return y_pred
+
+        evaluate_classifier_model(
+            model_name="NeuralNetwork",
+            predict=neural_network_predict,
+            X_test=X_test,
+            y_test=y_test,
+            save_plots=save_plots,
+        )
 
 
 ########################################################################################
@@ -218,6 +281,10 @@ def organize_data(data_dicts):
         test_size=0.1,
         shuffle=True,
     )
+    # Convert the characters to ints, for compatibility with all model libraries.
+    y_train = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_train])
+    y_test = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_test])
+
     print(f"X_train: {X_train.shape}")
     print(f"X_test: {X_test.shape}")
     print(f"y_train: {y_train.shape}")
@@ -226,28 +293,154 @@ def organize_data(data_dicts):
     return X_train, X_test, y_train, y_test
 
 
-def train_classifier_model(X_train, y_train):
+def train_logistic_regression_classifier(X_train, y_train):
     """
-    Train on the training data to yield a classifier model we can evaluate.
+    Train a logistic regression model on the training data to yield a classifier we can
+    evaluate.
     """
 
-    print("Training classifier model ...")
+    print("Training logistic regression model ...")
 
     s = time.time()
 
     model = LogisticRegression(solver="newton-cg")
     model.fit(X_train, y_train)
 
-    print(f"Trained in {round(time.time() - s)} sec.")
+    print(f"Trained logistic regression model in {round(time.time() - s)} sec.")
 
     return model
 
 
-def evaluate_classifier_model(model, X_test, y_test, show_plots=False):
+def train_neural_network_classifier(X_train, y_train, save_plots=False):
     """
-    Evaluate the trained model on the test data.
+    Train a Neural Network model on the training data to yield a classifier we can
+    evaluate.
     """
-    y_pred = model.predict(X_test)
+
+    print("Training neural network model ...")
+
+    s = time.time()
+
+    # Make training data tensors.
+    X_train = torch.from_numpy(X_train).float()
+    y_train = torch.from_numpy(y_train).long()
+
+    # Define hyperparameters of the model.
+    NUM_FEATURES = X_train.shape[1]
+    NUM_HIDDEN_LAYER_0 = 64
+    NUM_CLASSES = len(ALL_CHARS)
+
+    # Define the model.
+    # model = torch.nn.Sequential(
+    #     torch.nn.Linear(NUM_FEATURES, NUM_HIDDEN_LAYER_0),
+    #     torch.nn.ReLU(),
+    #     torch.nn.Linear(NUM_HIDDEN_LAYER_0, NUM_CLASSES),
+    # )
+    model = torch.nn.Sequential(
+        torch.nn.Linear(NUM_FEATURES, NUM_CLASSES),
+    )
+
+    # Visualize the model and save the image to disk.
+    torchview.draw_graph(
+        model,
+        input_size=(1, NUM_FEATURES),
+        save_graph=True,
+        directory=OUTPUTS_DIR,
+        filename="graph_for_single_letters_nn",
+    )
+
+    ## Train the model.
+
+    # Define hyperparameters of the training process.
+    NUM_SAMPLES = X_train.shape[0]
+    NUM_EPOCHS = 500
+    BATCH_SIZE = 50
+    LEARNING_RATE = 10e-6
+    MOMENTUM = 0.9
+    LOG_EVERY_NUM_BATCHES = 50
+
+    # Define components of the training process.
+    loss_function = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
+
+    epoch_losses = []
+
+    # Run multiple epochs of training.
+    for epoch_idx in range(NUM_EPOCHS):
+        # Shuffle the training data for this epoch.
+        random_order = torch.randperm(NUM_SAMPLES)
+        epoch_X_train, epoch_y_train = X_train[random_order], y_train[random_order]
+
+        # For each epoch, run multiple batches.
+        running_loss = 0
+        samples_in_loss = 0
+        num_batches = int(NUM_SAMPLES / BATCH_SIZE)
+        for batch_idx in range(num_batches):
+            # Get the samples for this batch.
+            batch_start_idx = BATCH_SIZE * batch_idx
+            batch_end_idx = BATCH_SIZE * (batch_idx + 1)
+            batch_X_train = epoch_X_train[batch_start_idx:batch_end_idx]
+            batch_y_train = epoch_y_train[batch_start_idx:batch_end_idx]
+
+            # Use the model to predict outputs for this batch.
+            batch_y_pred = model(batch_X_train)
+
+            # Compare the model predictions to the correct labels to calculate the loss.
+            batch_loss = loss_function(batch_y_pred, batch_y_train)
+
+            # Back propogate from the loss to calculate each model parameter's gradient.
+            batch_loss.backward()
+
+            # Update the model parameters' weights using gradient descent.
+            optimizer.step()
+
+            # Keep track of and log progress and stats during training.
+            running_loss += batch_loss.item()
+            samples_in_loss += BATCH_SIZE
+            if batch_idx % LOG_EVERY_NUM_BATCHES == 0:
+                print(
+                    f"epoch: {epoch_idx}\t"
+                    f"batch: {batch_idx}\t"
+                    f"loss: {round(running_loss / samples_in_loss, 8):.8f};"
+                )
+
+        # Keep track of the loss in each epoch to plot it.
+        samples_in_loss = BATCH_SIZE * (batch_idx + 1)
+        epoch_loss = running_loss / samples_in_loss
+        epoch_losses.append(epoch_loss)
+
+    print(f"Trained neural network model in {round(time.time() - s)} sec.")
+
+    ## Plot the loss over the course of the training.
+
+    fig, ax = plt.subplots()
+
+    ax.plot(epoch_losses)
+
+    ax.set_xlabel("epoch")
+
+    ax.set_ylabel("loss per sample")
+    ax.set_yscale("log")
+
+    plt.tight_layout()
+
+    if save_plots:
+        # Save the figure.
+        Path(OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
+        plot_filename = f"single_character_loss_during_training.png"
+        plot_filepath = os.path.join(OUTPUTS_DIR, plot_filename)
+        plt.savefig(plot_filepath)
+    else:
+        plt.show()
+
+    return model
+
+
+def evaluate_classifier_model(model_name, predict, X_test, y_test, save_plots=False):
+    """
+    Evaluate a trained model on the test data.
+    """
+    y_pred = predict(X_test)
 
     accuracy = np.sum(y_pred == y_test) / len(y_test)
 
@@ -259,15 +452,15 @@ def evaluate_classifier_model(model, X_test, y_test, show_plots=False):
 
     fig.colorbar(heatmap, ax=ax)
 
-    ax.set_xticks(np.arange(len(model.classes_)))
-    ax.set_xticklabels(model.classes_, rotation=45, ha="right")
+    ax.set_xticks(np.arange(len(ALL_CHARS)))
+    ax.set_xticklabels(ALL_CHARS, rotation=45, ha="right")
     ax.set_xlabel("predicted character")
 
-    ax.set_yticks(np.arange(len(model.classes_)))
-    ax.set_yticklabels(model.classes_)
+    ax.set_yticks(np.arange(len(ALL_CHARS)))
+    ax.set_yticklabels(ALL_CHARS)
     ax.set_ylabel("true character")
 
-    model_str = str(model).split("(")[0]
+    model_str = model_name.split("(")[0]
     accuracy_str = str(round(accuracy, 2))
     ax.set_title(f"{model_str} on single characters (accuracy: {accuracy_str})")
 
@@ -276,15 +469,14 @@ def evaluate_classifier_model(model, X_test, y_test, show_plots=False):
 
     plt.tight_layout()
 
-    if show_plots:
-        plt.show()
-    else:
+    if save_plots:
         # Save the figure.
-        outputs_dir = os.path.abspath("./outputs")
-        Path(outputs_dir).mkdir(parents=True, exist_ok=True)
+        Path(OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
         plot_filename = f"single_character_performance_{model_str}.png"
-        plot_filepath = os.path.join(outputs_dir, plot_filename)
+        plot_filepath = os.path.join(OUTPUTS_DIR, plot_filename)
         plt.savefig(plot_filepath)
+    else:
+        plt.show()
 
 
 if __name__ == "__main__":
