@@ -61,7 +61,9 @@ def main():
 
     ## Create labeled pairs.
 
-    X_train, X_test, y_train, y_test = organize_data(data_dicts)
+    X_train, X_validation, X_test, y_train, y_validation, y_test = organize_data(
+        data_dicts
+    )
 
     if run_linear:
         ## Train a logistic regression classifier model.
@@ -85,7 +87,9 @@ def main():
 
         neural_network_model = train_neural_network_classifier(
             X_train,
+            X_validation,
             y_train,
+            y_validation,
             save_plots=save_plots,
         )
 
@@ -281,16 +285,25 @@ def organize_data(data_dicts):
         test_size=0.2,
         shuffle=True,
     )
+    X_train, X_validation, y_train, y_validation = train_test_split(
+        X_train,
+        y_train,
+        test_size=0.25,
+        shuffle=True,
+    )
     # Convert the characters to ints, for compatibility with all model libraries.
     y_train = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_train])
+    y_validation = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_validation])
     y_test = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_test])
 
     print(f"X_train: {X_train.shape}")
+    print(f"X_validation: {X_validation.shape}")
     print(f"X_test: {X_test.shape}")
     print(f"y_train: {y_train.shape}")
+    print(f"y_validation: {y_validation.shape}")
     print(f"y_test: {y_test.shape}")
 
-    return X_train, X_test, y_train, y_test
+    return X_train, X_validation, X_test, y_train, y_validation, y_test
 
 
 def train_logistic_regression_classifier(X_train, y_train):
@@ -311,7 +324,9 @@ def train_logistic_regression_classifier(X_train, y_train):
     return model
 
 
-def train_neural_network_classifier(X_train, y_train, save_plots=False):
+def train_neural_network_classifier(
+    X_train, X_validation, y_train, y_validation, save_plots=False
+):
     """
     Train a Neural Network model on the training data to yield a classifier we can
     evaluate.
@@ -323,6 +338,7 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
 
     # Make training data tensors.
     X_train = torch.from_numpy(X_train).float()
+    X_validation = torch.from_numpy(X_validation).float()
     y_train = torch.from_numpy(y_train).long()
 
     # Define hyperparameters of the model.
@@ -332,16 +348,16 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
     NUM_CLASSES = len(ALL_CHARS)
 
     # Define the model.
-    model = torch.nn.Sequential(
-        torch.nn.Linear(NUM_FEATURES, NUM_HIDDEN_LAYER_0),
-        torch.nn.ReLU(),
-        torch.nn.Linear(NUM_HIDDEN_LAYER_0, NUM_HIDDEN_LAYER_1),
-        torch.nn.ReLU(),
-        torch.nn.Linear(NUM_HIDDEN_LAYER_0, NUM_CLASSES),
-    )
     # model = torch.nn.Sequential(
-    #     torch.nn.Linear(NUM_FEATURES, NUM_CLASSES),
+    #     torch.nn.Linear(NUM_FEATURES, NUM_HIDDEN_LAYER_0),
+    #     torch.nn.ReLU(),
+    #     torch.nn.Linear(NUM_HIDDEN_LAYER_0, NUM_HIDDEN_LAYER_1),
+    #     torch.nn.ReLU(),
+    #     torch.nn.Linear(NUM_HIDDEN_LAYER_0, NUM_CLASSES),
     # )
+    model = torch.nn.Sequential(
+        torch.nn.Linear(NUM_FEATURES, NUM_CLASSES),
+    )
 
     # Visualize the model and save the image to disk.
     torchview.draw_graph(
@@ -356,13 +372,11 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
 
     # Define hyperparameters of the training process.
     NUM_SAMPLES = X_train.shape[0]
-    VALIDATION_PORTION = 0.2
-    TRAINING_PORTION = 1 - VALIDATION_PORTION
-    NUM_TRAINING_SAMPLES = int(NUM_SAMPLES * TRAINING_PORTION)
-    NUM_EPOCHS = 5000
-    BATCH_SIZE = NUM_SAMPLES  # batch is whole epoch. no mini-batching necessary yet.
+    NUM_EPOCHS = 2000
+    BATCH_SIZE = 50
     LEARNING_RATE = 10e-6
     MOMENTUM = 0.9
+    LOG_EVERY_NUM_EPOCHS = 10
 
     # Define components of the training process.
     loss_function = torch.nn.CrossEntropyLoss()
@@ -375,14 +389,7 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
     for epoch_idx in range(NUM_EPOCHS):
         # Shuffle the training data for this epoch.
         random_order = torch.randperm(NUM_SAMPLES)
-        X_train_shuffled = X_train[random_order]
-        y_train_shuffled = y_train[random_order]
-
-        # Split the shuffled data for this epoch into training and validation sets.
-        epoch_X_train = X_train_shuffled[:NUM_TRAINING_SAMPLES]
-        epoch_X_validation = X_train_shuffled[NUM_TRAINING_SAMPLES:]
-        epoch_y_train = y_train_shuffled[:NUM_TRAINING_SAMPLES]
-        epoch_y_validation = y_train_shuffled[NUM_TRAINING_SAMPLES:]
+        epoch_X_train, epoch_y_train = X_train[random_order], y_train[random_order]
 
         # Keep track of the total and correct samples in this epoch, for calculating
         # accuracy on the training data.
@@ -402,10 +409,10 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
             model.zero_grad()
 
             # Use the model to predict outputs for this batch.
-            batch_y_pred = model(batch_X_train)
+            batch_y_pred_1hot = model(batch_X_train)
 
             # Compare the model predictions to the correct labels to calculate the loss.
-            batch_loss = loss_function(batch_y_pred, batch_y_train)
+            batch_loss = loss_function(batch_y_pred_1hot, batch_y_train)
 
             # Back propogate from the loss to calculate each model parameter's gradient.
             batch_loss.backward()
@@ -413,31 +420,43 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
             # Update the model parameters' weights using gradient descent.
             optimizer.step()
 
-            # Keep track of and log progress and stats during training.
+            # Keep track of stats for calculating accuracy on training data.
+            batch_y_pred = np.argmax(batch_y_pred_1hot.detach().numpy(), axis=1)
+            batch_y_train = batch_y_train.detach().numpy()
             epoch_train_samples += len(batch_y_pred)
-            epoch_train_samples_correct += len(batch_y_pred == batch_y_train)
+            epoch_train_samples_correct += sum(batch_y_pred == batch_y_train)
 
+        # Calculate accuracy on training for this epoch.
         epoch_train_accuracy = epoch_train_samples_correct / epoch_train_samples
         epoch_train_accuracies.append(epoch_train_accuracy)
 
+        # Calculate accuracy on validation data.
         with torch.no_grad():
-            epoch_y_pred_validation = model(epoch_X_validation)
+            epoch_y_pred_validation_1hot = model(X_validation)
+            epoch_y_pred_validation = np.argmax(
+                epoch_y_pred_validation_1hot.detach().numpy(), axis=1
+            )
             epoch_validation_samples = len(epoch_y_pred_validation)
-            epoch_validation_samples_correct = len(
-                epoch_y_pred_validation == epoch_y_validation
+            epoch_validation_samples_correct = sum(
+                epoch_y_pred_validation == y_validation
             )
             epoch_validation_accuracy = (
                 epoch_validation_samples_correct / epoch_validation_samples
             )
             epoch_validation_accuracies.append(epoch_validation_accuracy)
 
-        print(
-            f"{round(time.time() - s, 2)} sec\t"
-            f"train accuracy: {round(epoch_train_accuracy, 4)}\t"
-            f"validation accuracy: {round(epoch_validation_accuracy, 4)}\t"
-        )
+        # Periodically log progress and stats.
+        if epoch_idx % LOG_EVERY_NUM_EPOCHS == 0:
+            print(
+                f"epochs: {epoch_idx}/{NUM_EPOCHS}\t"
+                f"train accuracy: {round(epoch_train_accuracy, 4):.4f}\t"
+                f"validation accuracy: {round(epoch_validation_accuracy, 4):.4f}\t"
+                f"{round(time.time() - s, 1):.1f} sec\t"
+            )
 
-    ## Plot the loss over the course of the training.
+    print(f"Trained in {round(time.time() - s)} sec.")
+
+    ## Plot the performance over the course of the training.
 
     fig, ax = plt.subplots()
 
@@ -447,12 +466,16 @@ def train_neural_network_classifier(X_train, y_train, save_plots=False):
     ax.set_xlabel("epoch")
     ax.set_ylabel("accuracy")
 
+    ax.set_title(
+        "Performance over the course of training, for the neural network model"
+    )
+
     plt.tight_layout()
 
     if save_plots:
         # Save the figure.
         Path(OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
-        plot_filename = f"single_character_loss_during_training.png"
+        plot_filename = f"single_character_performance_during_training.png"
         plot_filepath = os.path.join(OUTPUTS_DIR, plot_filename)
         plt.savefig(plot_filepath)
     else:

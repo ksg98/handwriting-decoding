@@ -1,4 +1,4 @@
-# Handwriting BCI project
+# Handwriting decoding
 
 ## Install
 
