@@ -12,6 +12,7 @@ from scipy.ndimage import gaussian_filter1d
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
 import torch
 import torch.nn.functional as F
 import torchview
@@ -42,13 +43,15 @@ OUTPUTS_DIR = os.path.abspath("./outputs")
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--visualize_neural", action="store_true")
-    parser.add_argument("--run_linear", action="store_true")
+    parser.add_argument("--run_lr", action="store_true")
+    parser.add_argument("--run_knn", action="store_true")
     parser.add_argument("--run_ffnn", action="store_true")
     parser.add_argument("--run_rnn", action="store_true")
     parser.add_argument("--save_plots", action="store_true")
     args = parser.parse_args()
     visualize_neural = args.visualize_neural
-    run_linear = args.run_linear
+    run_lr = args.run_lr
+    run_knn = args.run_knn
     run_ffnn = args.run_ffnn
     run_rnn = args.run_rnn
     save_plots = args.save_plots
@@ -68,7 +71,7 @@ def main():
         data_dicts
     )
 
-    if run_linear:
+    if run_lr:
         ## Train a logistic regression classifier model.
 
         # For this linear classifier, we flatten the neural activity for each trial.
@@ -85,6 +88,28 @@ def main():
         evaluate_classifier_model(
             model_name="LogisticRegression",
             model=logistic_regression_model,
+            X_test=X_test,
+            y_test=y_test,
+            save_plots=save_plots,
+        )
+
+    elif run_knn:
+        ## Train a K-nearest neighbors classifier model.
+
+        # For this linear classifier, we flatten the neural activity for each trial.
+        X_train = np.reshape(X_train, (X_train.shape[0], -1))
+        X_validation = np.reshape(X_validation, (X_validation.shape[0], -1))
+        X_test = np.reshape(X_test, (X_test.shape[0], -1))
+
+        k_nearest_neighbors_model = train_k_nearest_neighbors_classifier(
+            X_train, X_validation, y_train, y_validation
+        )
+
+        ## Evaluate the k-nearest neighbors classifier model.
+
+        evaluate_classifier_model(
+            model_name="KNearestNeighbors",
+            model=k_nearest_neighbors_model,
             X_test=X_test,
             y_test=y_test,
             save_plots=save_plots,
@@ -268,8 +293,8 @@ def organize_data(data_dicts):
 
     print("Organizing data ...")
 
-    REACTION_TIME_NUM_BINS = 0
-    TRAINING_WINDOW_NUM_BINS = 100
+    REACTION_TIME_NUM_BINS = 10
+    TRAINING_WINDOW_NUM_BINS = 90
 
     inputs = []
     labels = []
@@ -341,6 +366,34 @@ def train_logistic_regression_classifier(X_train, y_train):
     print(f"Trained logistic regression model in {round(time.time() - s)} sec.")
 
     return model
+
+
+def train_k_nearest_neighbors_classifier(X_train, X_validation, y_train, y_validation):
+    """
+    Train a k-neartest neighbors model on the training data to yield a classifier we can
+    evaluate.
+    """
+
+    print("Training k-nearest neighbors models ...")
+
+    s = time.time()
+
+    best_model_so_far = None
+    best_score_so_far = -1
+    all_scores = []
+    for n_neighbors in range(1, 10):
+        model = KNeighborsClassifier(n_neighbors=n_neighbors)
+        model.fit(X_train, y_train)
+        score = model.score(X_validation, y_validation)
+        all_scores.append(score)
+        if score > best_score_so_far:
+            best_model_so_far = model
+            best_score_so_far = score
+            print(f"{n_neighbors} neighbors yields best score so far of {score}.")
+
+    print(f"Trained k-nearest neighbors model in {round(time.time() - s)} sec.")
+
+    return best_model_so_far
 
 
 class FFNNClassifier(torch.nn.Module):
@@ -496,7 +549,7 @@ def train_feedforward_neural_network_classifier(
     if save_plots:
         # Save the figure.
         Path(OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
-        plot_filename = f"training_process_FFNN.png"
+        plot_filename = f"training_process_during_FFNN.png"
         plot_filepath = os.path.join(OUTPUTS_DIR, plot_filename)
         plt.savefig(plot_filepath)
     else:
@@ -538,11 +591,10 @@ def train_recurrent_neural_network_classifier(
     X_train, X_validation, y_train, y_validation, save_plots
 ):
     """
-    Train a Neural Network model on the training data to yield a classifier we can
-    evaluate.
+    Train an RNN model on the training data to yield a classifier we can evaluate.
     """
 
-    print("Training neural network model ...")
+    print("Training RNN ...")
 
     s = time.time()
 
@@ -654,7 +706,7 @@ def train_recurrent_neural_network_classifier(
                 f"{round(time.time() - s, 1):.1f} sec\t"
             )
 
-    print(f"Trained in {round(time.time() - s)} sec.")
+    print(f"Trained RNN in {round(time.time() - s)} sec.")
 
     ## Plot the performance over the course of the training.
 
@@ -687,7 +739,7 @@ def evaluate_classifier_model(model_name, model, X_test, y_test, save_plots):
     Evaluate a trained model on the test data.
     """
     with torch.no_grad():
-        if model_name == "LogisticRegression":
+        if model_name in ["LogisticRegression", "KNearestNeighbors"]:
             # Our linear model has a regular predict method, no modification necessary.
             y_pred = model.predict(X_test)
         elif model_name == "FFNN":
