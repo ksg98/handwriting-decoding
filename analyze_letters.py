@@ -13,6 +13,7 @@ from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 import torch
+import torch.nn.functional as F
 import torchview
 from sklearn.metrics import confusion_matrix
 from matplotlib import pyplot as plt
@@ -42,12 +43,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--visualize_neural", action="store_true")
     parser.add_argument("--run_linear", action="store_true")
-    parser.add_argument("--run_nn", action="store_true")
+    parser.add_argument("--run_ffnn", action="store_true")
+    parser.add_argument("--run_rnn", action="store_true")
     parser.add_argument("--save_plots", action="store_true")
     args = parser.parse_args()
     visualize_neural = args.visualize_neural
     run_linear = args.run_linear
-    run_nn = args.run_nn
+    run_ffnn = args.run_ffnn
+    run_rnn = args.run_rnn
     save_plots = args.save_plots
 
     ## Load the data.
@@ -68,6 +71,11 @@ def main():
     if run_linear:
         ## Train a logistic regression classifier model.
 
+        # For this linear classifier, we flatten the neural activity for each trial.
+        X_train = np.reshape(X_train, (X_train.shape[0], -1))
+        X_validation = np.reshape(X_validation, (X_validation.shape[0], -1))
+        X_test = np.reshape(X_test, (X_test.shape[0], -1))
+
         logistic_regression_model = train_logistic_regression_classifier(
             X_train, y_train
         )
@@ -76,16 +84,21 @@ def main():
 
         evaluate_classifier_model(
             model_name="LogisticRegression",
-            predict=logistic_regression_model.predict,
+            model=logistic_regression_model,
             X_test=X_test,
             y_test=y_test,
             save_plots=save_plots,
         )
 
-    if run_nn:
-        ## Train a neural network classifier model.
+    elif run_ffnn:
+        ## Train a feedforward neural network classifier model.
 
-        neural_network_model = train_neural_network_classifier(
+        # For this FFNN, we flatten the neural activity for each trial.
+        X_train = np.reshape(X_train, (X_train.shape[0], -1))
+        X_validation = np.reshape(X_validation, (X_validation.shape[0], -1))
+        X_test = np.reshape(X_test, (X_test.shape[0], -1))
+
+        FFNN_model = train_feedforward_neural_network_classifier(
             X_train,
             X_validation,
             y_train,
@@ -95,22 +108,30 @@ def main():
 
         ## Evaluate the neural network classifier model.
 
-        # Wrap the prediction function for compatibility with the common evaluation
-        # function.
-        def neural_network_predict(X):
-            """"""
-            # Convert numpy arrays to tensors to work with the neural network model.
-            X = torch.from_numpy(X).float()
-            # Use the neural network model to make a prediction.
-            y_pred_1hot = neural_network_model(X)
-            # The neural network model returns 1-hot vectors, so convert them to char
-            # class indices by getting the index of the non-zero element.
-            y_pred = np.argmax(y_pred_1hot.detach().numpy(), axis=1)
-            return y_pred
+        evaluate_classifier_model(
+            model_name="FFNN",
+            model=FFNN_model,
+            X_test=X_test,
+            y_test=y_test,
+            save_plots=save_plots,
+        )
+
+    elif run_rnn:
+        ## Train a recurrent neural network classifier model.
+
+        RNN_model = train_recurrent_neural_network_classifier(
+            X_train,
+            X_validation,
+            y_train,
+            y_validation,
+            save_plots=save_plots,
+        )
+
+        ## Evaluate the neural network classifier model.
 
         evaluate_classifier_model(
-            model_name="NeuralNetwork",
-            predict=neural_network_predict,
+            model_name="RNN",
+            model=RNN_model,
             X_test=X_test,
             y_test=y_test,
             save_plots=save_plots,
@@ -247,10 +268,10 @@ def organize_data(data_dicts):
 
     print("Organizing data ...")
 
-    REACTION_TIME_NUM_BINS = 10
-    TRAINING_WINDOW_NUM_BINS = 90
+    REACTION_TIME_NUM_BINS = 0
+    TRAINING_WINDOW_NUM_BINS = 100
 
-    input_vectors = []
+    inputs = []
     labels = []
     for session_idx, data_dict in enumerate(data_dicts):
         neural_activity = data_dict["neuralActivityTimeSeries"]
@@ -268,19 +289,17 @@ def organize_data(data_dicts):
             training_window_neural_activity = neural_activity[
                 training_window_start_bin:training_window_end_bin
             ]
-            # Make a separate feature out of every (feature, timestep) pair.
-            input_vector = training_window_neural_activity.flatten()
 
             label = prompts[trial_idx]
 
-            input_vectors.append(input_vector)
+            inputs.append(training_window_neural_activity)
             labels.append(label)
 
-    input_vectors = np.array(input_vectors)
+    inputs = np.array(inputs)
     labels = np.array(labels)
 
     X_train, X_test, y_train, y_test = train_test_split(
-        input_vectors,
+        inputs,
         labels,
         test_size=0.2,
         shuffle=True,
@@ -324,8 +343,20 @@ def train_logistic_regression_classifier(X_train, y_train):
     return model
 
 
-def train_neural_network_classifier(
-    X_train, X_validation, y_train, y_validation, save_plots=False
+class FFNNClassifier(torch.nn.Module):
+    def __init__(self, num_features, num_classes):
+        super(FFNNClassifier, self).__init__()
+        self.linear_input_layer = torch.nn.Linear(num_features, 32)
+        self.hidden_layer_0 = torch.nn.Linear(32, num_classes)
+
+    def forward(self, inp):
+        out = F.relu(self.linear_input_layer(inp))
+        out = self.hidden_layer_0(out)
+        return out
+
+
+def train_feedforward_neural_network_classifier(
+    X_train, X_validation, y_train, y_validation, save_plots
 ):
     """
     Train a Neural Network model on the training data to yield a classifier we can
@@ -343,20 +374,12 @@ def train_neural_network_classifier(
 
     # Define hyperparameters of the model.
     NUM_FEATURES = X_train.shape[1]
-    NUM_HIDDEN_LAYER_0 = 64
-    NUM_HIDDEN_LAYER_1 = 64
     NUM_CLASSES = len(ALL_CHARS)
 
     # Define the model.
-    # model = torch.nn.Sequential(
-    #     torch.nn.Linear(NUM_FEATURES, NUM_HIDDEN_LAYER_0),
-    #     torch.nn.ReLU(),
-    #     torch.nn.Linear(NUM_HIDDEN_LAYER_0, NUM_HIDDEN_LAYER_1),
-    #     torch.nn.ReLU(),
-    #     torch.nn.Linear(NUM_HIDDEN_LAYER_0, NUM_CLASSES),
-    # )
-    model = torch.nn.Sequential(
-        torch.nn.Linear(NUM_FEATURES, NUM_CLASSES),
+    model = FFNNClassifier(
+        num_features=NUM_FEATURES,
+        num_classes=NUM_CLASSES,
     )
 
     # Visualize the model and save the image to disk.
@@ -365,7 +388,7 @@ def train_neural_network_classifier(
         input_size=(1, NUM_FEATURES),
         save_graph=True,
         directory=OUTPUTS_DIR,
-        filename="graph_for_single_letters_nn",
+        filename="graph_for_single_letters_FFNN",
     )
 
     ## Train the model.
@@ -374,7 +397,7 @@ def train_neural_network_classifier(
     NUM_SAMPLES = X_train.shape[0]
     NUM_EPOCHS = 2000
     BATCH_SIZE = 50
-    LEARNING_RATE = 10e-6
+    LEARNING_RATE = 10e-5
     MOMENTUM = 0.9
     LOG_EVERY_NUM_EPOCHS = 10
 
@@ -466,16 +489,14 @@ def train_neural_network_classifier(
     ax.set_xlabel("epoch")
     ax.set_ylabel("accuracy")
 
-    ax.set_title(
-        "Performance over the course of training, for the neural network model"
-    )
+    ax.set_title("Performance over the course of training (FFNN)")
 
     plt.tight_layout()
 
     if save_plots:
         # Save the figure.
         Path(OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
-        plot_filename = f"single_character_performance_during_training.png"
+        plot_filename = f"training_process_FFNN.png"
         plot_filepath = os.path.join(OUTPUTS_DIR, plot_filename)
         plt.savefig(plot_filepath)
     else:
@@ -484,11 +505,209 @@ def train_neural_network_classifier(
     return model
 
 
-def evaluate_classifier_model(model_name, predict, X_test, y_test, save_plots=False):
+class RNNClassifier(torch.nn.Module):
+    def __init__(self, num_features, num_classes, num_hidden):
+        super(RNNClassifier, self).__init__()
+        self.num_features = num_features
+        self.num_classes = num_classes
+        self.num_hidden = num_hidden
+
+        self.inp_to_hidden = torch.nn.Linear(
+            self.num_features + self.num_hidden, self.num_hidden
+        )
+        self.hidden_to_out = torch.nn.Linear(self.num_hidden, self.num_classes)
+
+    def forward(self, inp, hidden):
+        combined = torch.cat((inp, hidden), 1)
+        new_hidden = self.inp_to_hidden(combined)
+        out = self.hidden_to_out(new_hidden)
+        return out, new_hidden
+
+    def init_hidden(self):
+        return torch.zeros(1, self.num_hidden)
+
+    def predict(self, sample):
+        hidden = self.init_hidden()
+        for inp in sample:
+            inp = torch.unsqueeze(inp, 0)
+            output_1hot, hidden = self(inp, hidden)
+        return output_1hot
+
+
+def train_recurrent_neural_network_classifier(
+    X_train, X_validation, y_train, y_validation, save_plots
+):
+    """
+    Train a Neural Network model on the training data to yield a classifier we can
+    evaluate.
+    """
+
+    print("Training neural network model ...")
+
+    s = time.time()
+
+    # Make training data tensors.
+    X_train = torch.from_numpy(X_train).float()
+    X_validation = torch.from_numpy(X_validation).float()
+    y_train = torch.from_numpy(y_train).long()
+
+    # Define hyperparameters of the model.
+    NUM_FEATURES = X_train.shape[2]
+    NUM_CLASSES = len(ALL_CHARS)
+    NUM_HIDDEN = 64
+
+    # Define the model.
+    model = RNNClassifier(
+        num_features=NUM_FEATURES,
+        num_classes=NUM_CLASSES,
+        num_hidden=NUM_HIDDEN,
+    )
+
+    # Visualize the model and save the image to disk.
+    torchview.draw_graph(
+        model,
+        input_size=[(1, NUM_FEATURES), (1, NUM_HIDDEN)],
+        save_graph=True,
+        directory=OUTPUTS_DIR,
+        filename="graph_for_single_letters_RNN",
+    )
+
+    ## Train the model.
+
+    # Define hyperparameters of the training process.
+    NUM_SAMPLES = X_train.shape[0]
+    NUM_EPOCHS = 100
+    LEARNING_RATE = 10e-5
+    MOMENTUM = 0.9
+    LOG_EVERY_NUM_EPOCHS = 1
+
+    # Define components of the training process.
+    loss_function = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
+
+    epoch_train_accuracies = []
+    epoch_validation_accuracies = []
+
+    # Run multiple epochs of training.
+    for epoch_idx in range(NUM_EPOCHS):
+        # Shuffle the training data for this epoch.
+        random_order = torch.randperm(NUM_SAMPLES)
+        epoch_X_train, epoch_y_train = X_train[random_order], y_train[random_order]
+
+        # Keep track of the total and correct samples in this epoch, for calculating
+        # accuracy on the training data.
+        epoch_train_samples = 0
+        epoch_train_samples_correct = 0
+
+        # Train the RNN on each sample in the epoch.
+
+        # Iterate through each sample (each sample is a series of time bins).
+        for sample_idx, sample_X_train in enumerate(epoch_X_train):
+            # Zero the parameters' gradients before training on the new sample.
+            model.zero_grad()
+
+            # Apply the RNN to get an output, by iterating through the time bins in this
+            # sample.
+            sample_y_pred_1hot = model.predict(sample_X_train)
+
+            # Compare the RNN's prediction to the correct answer to get the loss.
+            sample_y_train = epoch_y_train[sample_idx]
+            sample_y_train_unsqueezed = torch.unsqueeze(sample_y_train, 0)
+            sample_loss = loss_function(sample_y_pred_1hot, sample_y_train_unsqueezed)
+
+            # Back propogate from the loss to calculate each model parameter's gradient.
+            sample_loss.backward()
+
+            # Update the model parameters' weights using gradient descent.
+            optimizer.step()
+
+            # Keep track of stats for calculating accuracy on training data.
+            sample_y_pred = np.argmax(sample_y_pred_1hot.detach().numpy())
+            epoch_train_samples += 1
+            epoch_train_samples_correct += int(sample_y_pred == sample_y_train)
+
+        # Calculate accuracy on training for this epoch.
+        epoch_train_accuracy = epoch_train_samples_correct / epoch_train_samples
+        epoch_train_accuracies.append(epoch_train_accuracy)
+
+        # Calculate accuracy on validation data.
+        with torch.no_grad():
+            epoch_y_pred_validation_1hot = np.array(
+                [model.predict(sample).squeeze(0) for sample in X_validation]
+            )
+            epoch_y_pred_validation = np.argmax(epoch_y_pred_validation_1hot, axis=1)
+            epoch_validation_samples = len(epoch_y_pred_validation)
+            epoch_validation_samples_correct = sum(
+                epoch_y_pred_validation == y_validation
+            )
+            epoch_validation_accuracy = (
+                epoch_validation_samples_correct / epoch_validation_samples
+            )
+            epoch_validation_accuracies.append(epoch_validation_accuracy)
+
+        # Periodically log progress and stats.
+        if epoch_idx % LOG_EVERY_NUM_EPOCHS == 0:
+            print(
+                f"finished epoch: {epoch_idx}/{NUM_EPOCHS}\t"
+                f"train accuracy: {round(epoch_train_accuracy, 4):.4f}\t"
+                f"validation accuracy: {round(epoch_validation_accuracy, 4):.4f}\t"
+                f"{round(time.time() - s, 1):.1f} sec\t"
+            )
+
+    print(f"Trained in {round(time.time() - s)} sec.")
+
+    ## Plot the performance over the course of the training.
+
+    fig, ax = plt.subplots()
+
+    ax.plot(epoch_train_accuracies, label="train")
+    ax.plot(epoch_validation_accuracies, label="validation")
+
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("accuracy")
+
+    ax.set_title("Performance over the course of training (RNN)")
+
+    plt.tight_layout()
+
+    if save_plots:
+        # Save the figure.
+        Path(OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
+        plot_filename = f"training_process_during_RNN.png"
+        plot_filepath = os.path.join(OUTPUTS_DIR, plot_filename)
+        plt.savefig(plot_filepath)
+    else:
+        plt.show()
+
+    return model
+
+
+def evaluate_classifier_model(model_name, model, X_test, y_test, save_plots):
     """
     Evaluate a trained model on the test data.
     """
-    y_pred = predict(X_test)
+    with torch.no_grad():
+        if model_name == "LogisticRegression":
+            # Our linear model has a regular predict method, no modification necessary.
+            y_pred = model.predict(X_test)
+        elif model_name == "FFNN":
+            # Our neural network models require tensors instead of numpy arrays.
+            X_test = torch.from_numpy(X_test).float()
+            # Use the FFNN model to make predictions.
+            y_pred_1hot = model(X_test)
+            # Also, our neural network models return 1-hot vectors, so convert them to
+            # char class indices by getting the index of the non-zero element.
+            y_pred = np.argmax(y_pred_1hot.detach().numpy(), axis=1)
+        elif model_name == "RNN":
+            # Our neural network models require tensors instead of numpy arrays.
+            X_test = torch.from_numpy(X_test).float()
+            # Use the RNN model to make predictions.
+            y_pred_1hot = np.array(
+                [model.predict(sample).squeeze(0) for sample in X_test]
+            )
+            # Also, our neural network models return 1-hot vectors, so convert them to
+            # char class indices by getting the index of the non-zero element.
+            y_pred = np.argmax(y_pred_1hot, axis=1)
 
     accuracy = np.sum(y_pred == y_test) / len(y_test)
 
@@ -509,7 +728,7 @@ def evaluate_classifier_model(model_name, predict, X_test, y_test, save_plots=Fa
     ax.set_ylabel("true character")
 
     model_str = model_name.split("(")[0]
-    accuracy_str = str(round(accuracy, 2))
+    accuracy_str = f"{round(accuracy, 2):.2f}"
     ax.set_title(f"{model_str} on single characters (accuracy: {accuracy_str})")
 
     fig.set_figwidth(12)
