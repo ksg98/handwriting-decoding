@@ -33,11 +33,19 @@ ALL_CHARS = [
     "apostrophe",
     "comma",
 ]
+CHAR_REPLACEMENTS = {
+    "doNothing": "rest",
+    "greaterThan": ">",
+    "tilde": "~",
+    "questionMark": "?",
+    "apostrophe": "'",
+    "comma": ",",
+}
 CHAR_TO_CLASS_MAP = {char: idx for idx, char in enumerate(ALL_CHARS)}
 CLASS_TO_CHAR_MAP = {idx: char for idx, char in enumerate(ALL_CHARS)}
 
 PRE_GO_CUE_BINS = 50
-POST_GO_CUE_BINS = 150
+POST_GO_CUE_BINS = 120
 
 OUTPUTS_DIR = os.path.abspath("./outputs")
 
@@ -59,13 +67,35 @@ def main():
 
     ## Preprocess and label the data.
 
-    trial_neural_activities, trial_labels, pca_model = organize_data(data_dicts)
+    (
+        trial_neural_activities,
+        trial_labels,
+        trial_session_idxs,
+        trial_block_idxs,
+        pca_model,
+    ) = organize_data(data_dicts)
 
-    ## Plot the PCs activity across trials, grouped by character to see patterns.
+    # ## Plot the PCs activity across trials, grouped by character to see patterns.
 
-    # plot_PCs(trial_neural_activities, trial_labels, pca_model, save_plots)
+    # plot_PCs(
+    #     trial_neural_activities,
+    #     trial_labels,
+    #     trial_session_idxs,
+    #     trial_block_idxs,
+    #     pca_model,
+    #     save_plots,
+    # )
 
-    plot_tSNE(trial_neural_activities, trial_labels, pca_model, save_plots)
+    ## Plot the trials projected into t-SNE space, to see if they're clustering well.
+
+    plot_tSNE(
+        trial_neural_activities,
+        trial_labels,
+        trial_session_idxs,
+        trial_block_idxs,
+        pca_model,
+        save_plots,
+    )
 
 
 ########################################################################################
@@ -108,49 +138,51 @@ def organize_data(data_dicts):
 
     trial_neural_activities = []
     trial_labels = []
+    trial_session_idxs = []
+    trial_block_idxs = []
     for session_idx, data_dict in enumerate(data_dicts):
         neural_activity = data_dict["neuralActivityTimeSeries"]
         go_cue_bins = data_dict["goPeriodOnsetTimeBin"].ravel().astype(int)
         prompts = [a[0] for a in data_dict["characterCues"].ravel()]
         block_by_bin = data_dict["blockNumsTimeSeries"].ravel()
         block_nums = data_dict["blockList"].ravel()
+        session_block_means = data_dict["meansPerBlock"]
+        session_stddevs = data_dict["stdAcrossAllData"]
 
         ## NOTE: this maybe makes better pictures, but is kind of cheating since it's
         ## z-scoring evaluation data based on means of evaluation data, which it
         ## shouldn't have access to before evaluation.
-        # # Z-score each block's data based on that block's mean and stddev.
-        # zscored_neural_activity = np.zeros_like(neural_activity, dtype=np.float32)
-        # for block_num in block_nums:
-        #     block_neural_activity = neural_activity[block_by_bin == block_num]
-        #     with np.errstate(divide="ignore", invalid="ignore"):
-        #         block_means = np.mean(block_neural_activity, axis=0)
-        #         block_stddevs = np.std(block_neural_activity, axis=0)
-        #         zscored_block_neural_activity = (
-        #             block_neural_activity - block_means
-        #         ) / block_stddevs
-        #         zscored_block_neural_activity = np.nan_to_num(
-        #             zscored_block_neural_activity, nan=0, posinf=0, neginf=0
-        #         )
-        #         zscored_neural_activity[
-        #             block_by_bin == block_num
-        #         ] = zscored_block_neural_activity
+        # Z-score each block's data based on that block's mean and stddev.
+        zscored_neural_activity = np.zeros_like(neural_activity, dtype=np.float32)
+        for block_idx, block_num in enumerate(block_nums):
+            block_neural_activity = neural_activity[block_by_bin == block_num]
+            block_means = session_block_means[block_idx]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                zscored_block_neural_activity = (
+                    block_neural_activity - block_means
+                ) / session_stddevs
+                zscored_block_neural_activity = np.nan_to_num(
+                    zscored_block_neural_activity, nan=0, posinf=0, neginf=0
+                )
+                zscored_neural_activity[
+                    block_by_bin == block_num
+                ] = zscored_block_neural_activity
 
-        # Z-score both the training data and test data, based only on the means and
-        # stddevs of the training data.
-        training_block_nums = block_nums[:-1]
-        test_block_nums = block_nums[-1:]
-        training_bins = [b in training_block_nums for b in block_by_bin]
-        training_neural_activity = neural_activity[training_bins]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            training_means = np.mean(training_neural_activity, axis=0)
-            training_stddevs = np.std(training_neural_activity, axis=0)
-            zscored_neural_activity = (
-                neural_activity - training_means
-            ) / training_stddevs
+        # # Z-score both the training data and test data, based only on the means and
+        # # stddevs of the training data.
+        # training_block_nums = block_nums[:-1]
+        # test_block_nums = block_nums[-1:]
+        # training_bins = [b in training_block_nums for b in block_by_bin]
+        # training_neural_activity = neural_activity[training_bins]
+        # with np.errstate(divide="ignore", invalid="ignore"):
+        #     training_means = np.mean(training_neural_activity, axis=0)
+        #     training_stddevs = np.std(training_neural_activity, axis=0)
+        #     zscored_neural_activity = (
+        #         neural_activity - training_means
+        #     ) / training_stddevs
 
         # Fit a PCA model with which to transform z-scored neural data.
-        NUM_PCS = 3
-        pca_model = PCA(n_components=NUM_PCS)
+        pca_model = PCA()
         pca_model.fit(zscored_neural_activity)
 
         print(f"Creating labeled pairs for session {session_idx} ...")
@@ -166,17 +198,39 @@ def organize_data(data_dicts):
 
             trial_neural_activities.append(window_neural_activity)
             trial_labels.append(label)
+            trial_session_idxs.append(session_idx)
+            trial_block_idxs.append(f"{session_idx}_{block_by_bin[go_cue_bin]}")
 
     trial_neural_activities = np.array(trial_neural_activities)
     trial_labels = np.array(trial_labels)
+    trial_session_idxs = np.array(trial_session_idxs)
+    trial_block_idxs = np.array(trial_block_idxs)
 
-    return trial_neural_activities, trial_labels, pca_model
+    return (
+        trial_neural_activities,
+        trial_labels,
+        trial_session_idxs,
+        trial_block_idxs,
+        pca_model,
+    )
 
 
-def plot_PCs(trial_neural_activities, trial_labels, pca_model, save_plots):
+def plot_PCs(
+    trial_neural_activities,
+    trial_labels,
+    trial_session_idxs,
+    trial_block_idxs,
+    pca_model,
+    save_plots,
+):
     """
     Plot principal component values across individual trials.
     """
+
+    SESSION_IDXS_TO_PLOT = [1, 2, 3]
+    sessions_bins = [s in SESSION_IDXS_TO_PLOT for s in trial_session_idxs]
+    trial_neural_activities = trial_neural_activities[sessions_bins]
+    trial_labels = trial_labels[sessions_bins]
 
     trial_PCs = np.array([pca_model.transform(w) for w in trial_neural_activities])
     trial_PCs_smoothed = np.array(
@@ -189,28 +243,32 @@ def plot_PCs(trial_neural_activities, trial_labels, pca_model, save_plots):
         for char in ALL_CHARS
     }
 
-    NUM_PCS = pca_model.n_components_
+    NUM_PCS_TO_PLOT = 3
 
-    for char in ALL_CHARS:
-        fig, axs = plt.subplots(1, NUM_PCS)
+    for char in ALL_CHARS[:5]:
+        if len(trial_PCs_smoothed_by_char[char]) == 0:
+            continue
+
+        fig, axs = plt.subplots(1, NUM_PCS_TO_PLOT)
 
         for pc_idx, ax in enumerate(axs):
             ax.imshow(
-                trial_PCs_smoothed_by_char[char][:, :, pc_idx], cmap=colormaps["bwr"]
+                trial_PCs_smoothed_by_char[char][:, :, pc_idx],
+                cmap=colormaps["bwr"],
+                aspect=5,
             )
 
-            ax.axvline(50)
+            ax.axvline(PRE_GO_CUE_BINS, color="black")  # this gets us to the go cue
 
-            ax.set_xticks([0, 50, 100, 150, 200])
-            ax.set_xticklabels([-0.5, 0.0, 0.5, 1.0, 1.5])
+            ax.set_xticks([0, 50, 100, 150])
+            ax.set_xticklabels([-0.5, 0.0, 0.5, 1.0])
             ax.set_xlabel("time (s)")
 
-            ax.set_yticks([])
             ax.set_ylabel("trial")
 
             ax.set_title(f"{char} (PC{pc_idx + 1})")
 
-        fig.suptitle(f"Neural activity (PCs) during trials of each character")
+        fig.suptitle(f"Neural activity (PCs) during trials of '{char}'")
 
         fig.tight_layout()
 
@@ -225,39 +283,106 @@ def plot_PCs(trial_neural_activities, trial_labels, pca_model, save_plots):
             plt.show()
 
 
-def plot_tSNE(trial_neural_activities, trial_labels, pca_model, save_plots):
+def plot_tSNE(
+    trial_neural_activities,
+    trial_labels,
+    trial_session_idxs,
+    trial_block_idxs,
+    pca_model,
+    save_plots,
+):
     """Plot the t-SNE projections of the trials in 2D space."""
 
-    trial_PCs = np.array([pca_model.transform(w) for w in trial_neural_activities])
-    trial_PCs_smoothed = np.array(
-        [gaussian_filter1d(w, sigma=3.0, axis=0) for w in trial_PCs]
-    )
-    trial_PCs_windowed = trial_PCs_smoothed[:, 50:200]
+    ## Separate out each session.
 
-    trial_PCs_flattened = np.reshape(
-        trial_PCs_windowed, (trial_PCs_windowed.shape[0], -1)
-    )
+    all_session_idxs = sorted(set(trial_session_idxs))
 
-    tsne_model = TSNE(perplexity=10)
-    trials_projected = tsne_model.fit_transform(trial_PCs_flattened)
+    num_plots = len(all_session_idxs)
+    num_cols = int(np.ceil(np.sqrt(num_plots)))
+    num_rows = int(np.ceil(num_plots / num_cols))
 
-    fig, ax = plt.subplots()
+    fig, axs = plt.subplots(num_rows, num_cols)
 
-    for char_idx, char in enumerate(ALL_CHARS):
-        char_trials_projected = trials_projected[trial_labels == char]
-        color_idx = char_idx % len(MATPLOTLIB_COLORS)
-        color = MATPLOTLIB_COLORS[color_idx]
-        ax.scatter(
-            char_trials_projected[:, 0],
-            char_trials_projected[:, 1],
-            color=color,
-            label=char,
+    for session_idx in all_session_idxs:
+        row_idx = session_idx // num_cols
+        col_idx = session_idx % num_cols
+
+        ax = axs[row_idx, col_idx]
+
+        # Get just the trials for this session.
+        session_trial_neural_activities = trial_neural_activities[
+            trial_session_idxs == session_idx
+        ]
+        session_trial_labels = trial_labels[trial_session_idxs == session_idx]
+
+        # Transform the neural activity using our PCA model trained on all sessions.
+        trial_PCs = np.array(
+            [pca_model.transform(w) for w in session_trial_neural_activities]
+        )
+        # Smooth the PCs over time.
+        trial_PCs_smoothed = np.array(
+            [gaussian_filter1d(w, sigma=3.0, axis=0) for w in trial_PCs]
+        )
+        # Take just the window starting at the go cue.
+        trial_PCs_windowed = trial_PCs_smoothed[
+            :, PRE_GO_CUE_BINS : PRE_GO_CUE_BINS + POST_GO_CUE_BINS
+        ]
+        # Flatten the PCs so tSNE can operate on 1D vectors.
+        trial_PCs_flattened = np.reshape(
+            trial_PCs_windowed, (trial_PCs_windowed.shape[0], -1)
         )
 
-    ax.legend()
+        ## The neural data is now transformed and separated by trial.
+        ## Now fit a t-SNE model.
 
-    fig.set_figwidth(12)
-    fig.set_figheight(12)
+        PERPLEXITY = 3
+        tsne_model = TSNE(perplexity=PERPLEXITY)
+        trials_projected = tsne_model.fit_transform(trial_PCs_flattened)
+
+        ## Plot the t-SNE-projected trials in 2D space, colored by character to see if
+        ## they cluster well.
+
+        for char_idx, char in enumerate(ALL_CHARS):
+            char_trials_projected = trials_projected[session_trial_labels == char]
+            if len(char_trials_projected) == 0:
+                continue
+            color_idx = char_idx % len(MATPLOTLIB_COLORS)
+            color = MATPLOTLIB_COLORS[color_idx]
+            ax.scatter(
+                char_trials_projected[:, 0],
+                char_trials_projected[:, 1],
+                color=color,
+                alpha=0.8,
+                label=char,
+            )
+            # Label the cluster with the char text itself located at the mean point.
+            char_mean = np.median(char_trials_projected, axis=0)
+            ax.text(
+                char_mean[0],
+                char_mean[1],
+                CHAR_REPLACEMENTS.get(char, char),
+                color=color,
+                fontsize=16,
+                fontweight="bold",
+            )
+
+            ax.set_xlabel("t-SNE axis 0")
+            ax.set_xticks([])
+
+            ax.set_ylabel("t-SNE axis 1")
+            ax.set_yticks([])
+
+        ax.set_title(f"Session {session_idx}")
+
+    # Turn off the unused subplots.
+    for ax_idx in range(num_plots, num_rows * num_cols):
+        row_idx = ax_idx // num_cols
+        col_idx = ax_idx % num_cols
+        ax = axs[row_idx, col_idx]
+        ax.axis("off")
+
+    fig.set_figwidth(20)
+    fig.set_figheight(20)
 
     fig.tight_layout()
 
