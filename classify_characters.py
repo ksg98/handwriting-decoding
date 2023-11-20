@@ -19,6 +19,7 @@ import torchview
 from sklearn.metrics import confusion_matrix
 from matplotlib import pyplot as plt
 
+
 MATPLOTLIB_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
 ALL_CHARS = [
@@ -34,6 +35,7 @@ CHAR_TO_CLASS_MAP = {char: idx for idx, char in enumerate(ALL_CHARS)}
 CLASS_TO_CHAR_MAP = {idx: char for idx, char in enumerate(ALL_CHARS)}
 
 OUTPUTS_DIR = os.path.abspath("./outputs")
+
 
 ########################################################################################
 # Main function.
@@ -94,9 +96,19 @@ def main():
         )
 
     elif run_knn:
-        ## Train a K-nearest neighbors classifier model.
+        ## Train a k-nearest neighbors classifier model.
 
-        # For this linear classifier, we flatten the neural activity for each trial.
+        # For this k-nearest neighbors classifier, we run dimensionality reduction on
+        # the neural activity (all trials concatenated) to get transformed neural
+        # activity.
+        NUM_PCS = 100
+        pca_model = PCA(n_components=NUM_PCS)
+        pca_model.fit(X_train.reshape(-1, X_train.shape[2]))
+        X_train = np.array([pca_model.transform(trial) for trial in X_train])
+        X_validation = np.array([pca_model.transform(trial) for trial in X_validation])
+        X_test = np.array([pca_model.transform(trial) for trial in X_test])
+
+        # We also flatten the transformed neural activity for each trial.
         X_train = np.reshape(X_train, (X_train.shape[0], -1))
         X_validation = np.reshape(X_validation, (X_validation.shape[0], -1))
         X_test = np.reshape(X_test, (X_test.shape[0], -1))
@@ -378,10 +390,11 @@ def train_k_nearest_neighbors_classifier(X_train, X_validation, y_train, y_valid
 
     s = time.time()
 
+    MAX_NEIGHBORS = 10
     best_model_so_far = None
     best_score_so_far = -1
     all_scores = []
-    for n_neighbors in range(1, 10):
+    for n_neighbors in range(1, MAX_NEIGHBORS):
         model = KNeighborsClassifier(n_neighbors=n_neighbors)
         model.fit(X_train, y_train)
         score = model.score(X_validation, y_validation)
