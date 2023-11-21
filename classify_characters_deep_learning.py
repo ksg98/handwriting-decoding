@@ -101,8 +101,7 @@ def main():
         # For this k-nearest neighbors classifier, we run dimensionality reduction on
         # the neural activity (all trials concatenated) to get transformed neural
         # activity.
-        NUM_PCS = 100
-        pca_model = PCA(n_components=NUM_PCS)
+        pca_model = PCA()
         pca_model.fit(X_train.reshape(-1, X_train.shape[2]))
         X_train = np.array([pca_model.transform(trial) for trial in X_train])
         X_validation = np.array([pca_model.transform(trial) for trial in X_validation])
