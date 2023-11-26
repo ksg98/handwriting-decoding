@@ -12,7 +12,7 @@ import numpy as np
 from scipy.io import loadmat
 from scipy.ndimage import gaussian_filter1d
 from sklearn.decomposition import PCA
-from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import confusion_matrix
 from matplotlib import pyplot as plt
 
@@ -40,7 +40,7 @@ CHAR_TO_CLASS_MAP = {char: idx for idx, char in enumerate(ALL_CHARS)}
 CLASS_TO_CHAR_MAP = {idx: char for idx, char in enumerate(ALL_CHARS)}
 
 REACTION_TIME_BINS = 10
-TRAINING_WINDOW_BINS = 120
+TRAINING_WINDOW_BINS = 150
 
 OUTPUTS_DIR = os.path.abspath("./outputs")
 
@@ -180,25 +180,21 @@ def main():
 
     ## Iterate through different values of hyperparameters to find good ones.
 
-    NUM_NEIGHBORS_TO_TRY = [3, 5, 7]
-    NUM_PCS_TO_TRY = [10, 15, 20, 25, 30]
+    NUM_PCS_TO_TRY = [20, 30, 40, 50, 60, 192]
     SMOOTHING_STDDEV = 3.0
 
-    all_combos = list(
-        itertools.product(range(len(NUM_NEIGHBORS_TO_TRY)), range(len(NUM_PCS_TO_TRY)))
-    )
+    all_combos = list(itertools.product(range(len(NUM_PCS_TO_TRY))))
 
-    validation_accuracies = np.zeros((len(NUM_NEIGHBORS_TO_TRY), len(NUM_PCS_TO_TRY)))
+    validation_accuracies = np.zeros((len(NUM_PCS_TO_TRY),))
 
     best_model_so_far = None
     best_hyperparams_so_far = None
     X_test_to_evaluate_on = None
     best_accuracy_so_far = -1
 
-    for combo_idx, (num_neighbors_idx, num_pcs_idx) in enumerate(all_combos):
+    for combo_idx, (num_pcs_idx,) in enumerate(all_combos):
         print(f"Hyperparam combo {combo_idx + 1} / {len(all_combos)}")
 
-        num_neighbors = NUM_NEIGHBORS_TO_TRY[num_neighbors_idx]
         num_pcs = NUM_PCS_TO_TRY[num_pcs_idx]
 
         ## Get PCA-transformed data (all of training, validation, and test).
@@ -232,27 +228,28 @@ def main():
             PCs_smoothed_X_test, (PCs_smoothed_X_test.shape[0], -1)
         )
 
-        ## Train a k-nearest neighbors model on the preprocessed training data.
+        ## Train a logistic regression model on the preprocessed training data.
 
-        print("Training k-nearest neighbors model ...")
+        print("Training logistic regression model ...")
 
-        knn_model = KNeighborsClassifier(n_neighbors=num_neighbors)
-        knn_model.fit(PCs_flattened_X_train, y_train)
+        logistic_regression_model = LogisticRegression(solver="newton-cg")
+        logistic_regression_model.fit(PCs_flattened_X_train, y_train)
 
         ## Evaluate the k-nearest neighbors model on the preprocessed test data.
 
-        y_pred_validation = knn_model.predict(PCs_flattened_X_validation)
+        y_pred_validation = logistic_regression_model.predict(
+            PCs_flattened_X_validation
+        )
 
         validation_accuracy = np.sum(y_pred_validation == y_validation) / len(
             y_validation
         )
 
-        validation_accuracies[num_neighbors_idx, num_pcs_idx] = validation_accuracy
+        validation_accuracies[num_pcs_idx] = validation_accuracy
 
         if validation_accuracy > best_accuracy_so_far:
-            best_model_so_far = knn_model
+            best_model_so_far = logistic_regression_model
             best_hyperparams_so_far = {
-                "num_neighbors": num_neighbors,
                 "num_pcs": num_pcs,
             }
             X_test_to_evaluate_on = PCs_flattened_X_test
@@ -282,9 +279,6 @@ def main():
 
     accuracy_str = f"{round(test_accuracy, 2):.2f}"
     confusion_ax.plot(
-        [], [], alpha=0, label=f"{best_hyperparams_so_far['num_neighbors']} neighbors"
-    )
-    confusion_ax.plot(
         [], [], alpha=0, label=f"{best_hyperparams_so_far['num_pcs']} PCs"
     )
     confusion_ax.plot([], [], alpha=0, label=f"{accuracy_str} accuracy")
@@ -294,19 +288,7 @@ def main():
 
     ## Plot the performance grid of hyperparameter choices.
 
-    heatmap = hyperparam_ax.imshow(validation_accuracies, cmap=plt.cm.Blues_r)
-
-    # Display the accuracy in each square.
-    for num_neighbors_idx, num_pcs_idx in itertools.product(
-        range(len(NUM_NEIGHBORS_TO_TRY)), range(len(NUM_PCS_TO_TRY))
-    ):
-        hyperparam_ax.text(
-            num_pcs_idx,
-            num_neighbors_idx,
-            f"{validation_accuracies[num_neighbors_idx, num_pcs_idx]:.3f}",
-            ha="center",
-            va="center",
-        )
+    heatmap = hyperparam_ax.plot(validation_accuracies)
 
     hyperparam_ax.set_xticks(range(len(NUM_PCS_TO_TRY)))
     hyperparam_ax.set_xticklabels(
@@ -314,15 +296,12 @@ def main():
     )
     hyperparam_ax.set_xlabel("num PCs")
 
-    hyperparam_ax.set_yticks(np.arange(len(NUM_NEIGHBORS_TO_TRY)))
-    hyperparam_ax.set_yticklabels([f"{a:.2f}" for a in NUM_NEIGHBORS_TO_TRY])
-    hyperparam_ax.set_ylabel("num neighbors")
-
-    fig.colorbar(heatmap, ax=hyperparam_ax, label="accuracy")
+    hyperparam_ax.set_ylim(0.0, 1.0)
+    hyperparam_ax.set_ylabel("accuracy")
 
     hyperparam_ax.set_title("Accuracies on validation data")
 
-    model_str = "KNearestNeighbors"
+    model_str = "LogisticRegression"
     fig.suptitle(f"{model_str} on single-letter instructed-delay task")
 
     fig.set_figwidth(20)
