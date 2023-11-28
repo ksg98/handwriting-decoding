@@ -144,6 +144,10 @@ def main():
                 # Get the character for this trial.
                 trial_label = block_prompts[trial_idx]
 
+                # Skip rest trials.
+                if trial_label == "doNothing":
+                    continue
+
                 # Add the trial to the appropriate set of data (train, validation, or
                 # test).
                 if trial_idx in train_trial_idxs:
@@ -268,7 +272,7 @@ def main():
 
     confusion_results = confusion_matrix(y_test, y_pred_test, normalize="true")
 
-    heatmap = confusion_ax.imshow(confusion_results)
+    heatmap = confusion_ax.imshow(confusion_results, origin="lower")
 
     fig.colorbar(heatmap, ax=confusion_ax)
 
