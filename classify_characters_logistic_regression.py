@@ -34,62 +34,45 @@ CLASS_TO_CHAR_MAP = {idx: char for idx, char in enumerate(ALL_CHARS)}
 REACTION_TIME_BINS = 10
 TRAINING_WINDOW_BINS = 150
 
+NUM_ELECTRODES = 192
+
 OUTPUTS_DIR = os.path.abspath("./outputs")
 
 
 ########################################################################################
-# Main function.
+# Main functions.
 ########################################################################################
 
 
-def main():
+def main_LR():
     ## Load the data.
 
     data_dicts = load_data()
 
     ## Run the whole process multiple times to get a series of results.
 
-    NUM_RUNS = 5
+    accuracy_LR = run_multiple_LR(data_dicts)
+    print(f"accuracy_LR: {accuracy_LR}")
 
-    lr_accuracy_results = []
+    ## Vary number of electrodes.
 
-    for run_idx in range(NUM_RUNS):
-        print(f"LogisticRegression run {run_idx + 1} / {NUM_RUNS}")
+    NUM_ELECTRODES_TO_TRY = [48, 96, 144, None]
 
-        ## Preprocess and label the data.
+    accuracies_by_electrodes_LR = [
+        run_multiple_LR(data_dicts, num_electrodes=num_electrodes)
+        for num_electrodes in NUM_ELECTRODES_TO_TRY
+    ]
+    print(f"accuracies_by_electrodes_LR: {accuracies_by_electrodes_LR}")
 
-        X_train, X_validation, X_test, y_train, y_validation, y_test = organize_data(
-            data_dicts
-        )
+    ## Vary number of training trials.
 
-        ## Train a logistic regression model on the preprocessed training data.
+    NUM_TRAIN_TRIALS_TO_TRY = [300, 600, 900, 1200, 1500, 1800, None]
 
-        print("Training logistic regression model ...")
-
-        logistic_regression_model = LogisticRegression(solver="newton-cg")
-        logistic_regression_model.fit(X_train, y_train)
-
-        ## Evaluate the logistic regression model by calculating accuracy on the test
-        ## set.
-
-        y_pred_test = logistic_regression_model.predict(X_test)
-
-        test_accuracy = np.sum(y_pred_test == y_test) / len(y_test)
-
-        # Store this run's result.
-        lr_accuracy_results.append(test_accuracy)
-
-        accuracy_str = f"{round(test_accuracy, 3):.3f}"
-        print(f"accuracy: {accuracy_str}")
-
-        ## Optionally plot the confusion matrix.
-
-        show_confusion_matrix = False
-        if show_confusion_matrix:
-            plot_confusion_matrix(y_test, y_pred_test, accuracy_str)
-
-    print(f"LogisticRegression accuracies: {lr_accuracy_results}")
-    print(f"LogisticRegression mean accuracy: {np.mean(lr_accuracy_results)}")
+    accuracies_by_train_trials_LR = [
+        run_multiple_LR(data_dicts, num_train_trials=num_train_trials)
+        for num_train_trials in NUM_TRAIN_TRIALS_TO_TRY
+    ]
+    print(f"accuracies_by_train_trials_LR: {accuracies_by_train_trials_LR}")
 
 
 ########################################################################################
@@ -118,7 +101,7 @@ def load_data():
     return data_dicts
 
 
-def organize_data(data_dicts):
+def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
     """"""
 
     print("Preparing data ...")
@@ -133,6 +116,10 @@ def organize_data(data_dicts):
     validation_count_by_char = Counter()
     test_count_by_char = Counter()
 
+    # Random electrode order to let us limit electrodes.
+    rand_electrode_order = list(range(NUM_ELECTRODES))
+    random.shuffle(rand_electrode_order)
+
     # Iterate through the sessions.
     # NUM_SESSIONS = 1
     NUM_SESSIONS = None
@@ -143,6 +130,10 @@ def organize_data(data_dicts):
         prompts = np.array([a[0] for a in data_dict["characterCues"].ravel()])
         block_by_bin = data_dict["blockNumsTimeSeries"].ravel()
         block_nums = data_dict["blockList"].ravel()
+
+        # If specified, only use a random subset of electrodes.
+        if limit_electrodes is not None:
+            neural = neural[:, rand_electrode_order[:limit_electrodes]]
 
         # Iterate through each block in this session.
         for block_num in block_nums:
@@ -234,6 +225,10 @@ def organize_data(data_dicts):
     y_validation = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_validation])
     y_test = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_test])
 
+    if limit_train_trials:
+        X_train = X_train[:limit_train_trials]
+        y_train = y_train[:limit_train_trials]
+
     print(f"X_train.shape: {X_train.shape}")
     print(f"X_validation.shape: {X_validation.shape}")
     print(f"X_test.shape: {X_test.shape}")
@@ -273,5 +268,55 @@ def plot_confusion_matrix(y_test, y_pred_test, accuracy_str):
     plt.show()
 
 
+def run_multiple_LR(data_dicts, num_electrodes=None, num_train_trials=None, num_runs=5):
+    """"""
+
+    accuracy_results = []
+
+    for run_idx in range(num_runs):
+        print(f"LogisticRegression run {run_idx + 1} / {num_runs}")
+
+        ## Preprocess and label the data.
+
+        X_train, X_validation, X_test, y_train, y_validation, y_test = organize_data(
+            data_dicts,
+            limit_electrodes=num_electrodes,
+            limit_train_trials=num_train_trials,
+        )
+
+        ## Train a logistic regression model on the preprocessed training data.
+
+        print("Training logistic regression model ...")
+
+        logistic_regression_model = LogisticRegression(solver="newton-cg")
+        logistic_regression_model.fit(X_train, y_train)
+
+        ## Evaluate the logistic regression model by calculating accuracy on the test
+        ## set.
+
+        y_pred_test = logistic_regression_model.predict(X_test)
+
+        test_accuracy = np.sum(y_pred_test == y_test) / len(y_test)
+
+        # Store this run's result.
+        accuracy_results.append(test_accuracy)
+
+        accuracy_str = f"{round(test_accuracy, 3):.3f}"
+        print(f"accuracy: {accuracy_str}")
+
+        ## Optionally plot the confusion matrix.
+
+        show_confusion_matrix = False
+        if show_confusion_matrix:
+            plot_confusion_matrix(y_test, y_pred_test, accuracy_str)
+
+    mean_accuracy = np.mean(accuracy_results)
+
+    print(f"accuracies: {accuracy_results}")
+    print(f"mean accuracy: {np.mean(accuracy_results)}")
+
+    return mean_accuracy
+
+
 if __name__ == "__main__":
-    main()
+    main_LR()
