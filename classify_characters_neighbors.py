@@ -1,8 +1,4 @@
-import argparse
 import os
-from pathlib import Path
-import time
-import sys
 import string
 import itertools
 import random
@@ -20,7 +16,6 @@ from matplotlib import pyplot as plt
 MATPLOTLIB_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
 ALL_CHARS = [
-    "doNothing",
     *string.ascii_lowercase,
     "greaterThan",
     "tilde",
@@ -29,7 +24,6 @@ ALL_CHARS = [
     "comma",
 ]
 CHAR_REPLACEMENTS = {
-    "doNothing": "rest",
     "greaterThan": ">",
     "tilde": "~",
     "questionMark": "?",
@@ -40,7 +34,7 @@ CHAR_TO_CLASS_MAP = {char: idx for idx, char in enumerate(ALL_CHARS)}
 CLASS_TO_CHAR_MAP = {idx: char for idx, char in enumerate(ALL_CHARS)}
 
 REACTION_TIME_BINS = 10
-TRAINING_WINDOW_BINS = 120
+TRAINING_WINDOW_BINS = 150
 
 OUTPUTS_DIR = os.path.abspath("./outputs")
 
@@ -51,13 +45,62 @@ OUTPUTS_DIR = os.path.abspath("./outputs")
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--save_plots", action="store_true")
-    args = parser.parse_args()
-    save_plots = args.save_plots
-
     ## Load the data.
 
+    data_dicts = load_data()
+
+    ## Run the whole process multiple times to get a series of results.
+
+    NUM_RUNS = 5
+
+    knn_accuracy_results = []
+
+    for run_idx in range(NUM_RUNS):
+        print(f"KNearestNeighbors run {run_idx + 1} / {NUM_RUNS}")
+
+        ## Preprocess and label the data.
+
+        X_train, X_validation, X_test, y_train, y_validation, y_test = organize_data(
+            data_dicts
+        )
+
+        ## Train a k-nearest neighbors model on the preprocessed training data.
+
+        print("Training k-nearest neighbors model ...")
+
+        NUM_NEIGHBORS = 5
+        knn_model = KNeighborsClassifier(n_neighbors=NUM_NEIGHBORS)
+        knn_model.fit(X_train, y_train)
+
+        ## Evaluate the k-nearest neighbors model by calculating accuracy on the test
+        ## set.
+
+        y_pred_test = knn_model.predict(X_test)
+
+        test_accuracy = np.sum(y_pred_test == y_test) / len(y_test)
+        
+        # Store this run's result.
+        knn_accuracy_results.append(test_accuracy)
+
+        accuracy_str = f"{round(test_accuracy, 3):.3f}"
+        print(f"accuracy: {accuracy_str}")
+
+        ## Optionally plot the confusion matrix.
+
+        show_confusion_matrix = False
+        if show_confusion_matrix:
+            plot_confusion_matrix(y_test, y_pred_test, accuracy_str)
+
+    print(f"KNearestNeighbors accuracies: {knn_accuracy_results}")
+    print(f"KNearestNeighbors mean accuracy: {np.mean(knn_accuracy_results)}")
+
+########################################################################################
+# Helper functions.
+########################################################################################
+
+
+def load_data():
+    """"""
     DATA_DIR = os.path.abspath("./handwritingBCIData/Datasets/")
     letters_filepaths = []
     for root, _, filenames in os.walk(DATA_DIR):
@@ -73,9 +116,12 @@ def main():
         print(f"Loading {filepath} ...")
         data_dict = loadmat(filepath)
         data_dicts.append(data_dict)
-        # break  # for testing quickly
 
-    ## Preprocess and label the data.
+    return data_dicts
+
+
+def organize_data(data_dicts):
+    """"""
 
     print("Preparing data ...")
 
@@ -90,8 +136,8 @@ def main():
     test_count_by_char = Counter()
 
     # Iterate through the sessions.
-    NUM_SESSIONS = 1
-    # NUM_SESSIONS = None
+    # NUM_SESSIONS = 1
+    NUM_SESSIONS = None
     for data_dict in data_dicts[:NUM_SESSIONS]:
         neural = data_dict["neuralActivityTimeSeries"]
         go_cue_bins = data_dict["goPeriodOnsetTimeBin"].ravel().astype(int)
@@ -168,107 +214,56 @@ def main():
                         y_test.append(trial_label)
                         test_count_by_char[trial_label] += 1
 
-    X_train = np.array(X_train)
-    X_validation = np.array(X_validation)
-    X_test = np.array(X_test)
-    y_train = np.array(y_train)
-    y_validation = np.array(y_validation)
-    y_test = np.array(y_test)
-
-    ## Fit a PCA model (only on the training data) with which to transform z-scored
-    ## neural data.
+    # Fit a PCA model (only on the training data).
 
     print("Fitting PCA model ...")
 
     pca_model = PCA().fit(np.concatenate(X_train))
 
-    ## Iterate through different values of hyperparameters to find good ones.
+    # Get PCA-transformed data (all of training, validation, and test).
+    NUM_PCS = 25
+    X_train = np.array([pca_model.transform(w)[:, :NUM_PCS] for w in X_train])
+    X_validation = np.array(
+        [pca_model.transform(w)[:, :NUM_PCS] for w in X_validation]
+    )
+    X_test = np.array([pca_model.transform(w)[:, :NUM_PCS] for w in X_test])
 
-    NUM_NEIGHBORS_TO_TRY = [3, 5, 7]
-    NUM_PCS_TO_TRY = [10, 15, 20, 25, 30]
+    # Smooth the neural data over time.
     SMOOTHING_STDDEV = 3.0
-
-    all_combos = list(
-        itertools.product(range(len(NUM_NEIGHBORS_TO_TRY)), range(len(NUM_PCS_TO_TRY)))
+    X_train = np.array(
+        [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_train]
+    )
+    X_validation = np.array(
+        [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_validation]
+    )
+    X_test = np.array(
+        [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_test]
     )
 
-    validation_accuracies = np.zeros((len(NUM_NEIGHBORS_TO_TRY), len(NUM_PCS_TO_TRY)))
+    # Flatten each trial's neural data since the model operates on 1D vectors.
+    X_train = np.reshape(X_train, (X_train.shape[0], -1))
+    X_validation = np.reshape(X_validation, (X_validation.shape[0], -1))
+    X_test = np.reshape(X_test, (X_test.shape[0], -1))
 
-    best_model_so_far = None
-    best_hyperparams_so_far = None
-    X_test_to_evaluate_on = None
-    best_accuracy_so_far = -1
+    # Convert the characters to ints, for compatibility with pytorch.
+    y_train = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_train])
+    y_validation = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_validation])
+    y_test = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_test])
 
-    for combo_idx, (num_neighbors_idx, num_pcs_idx) in enumerate(all_combos):
-        print(f"Hyperparam combo {combo_idx + 1} / {len(all_combos)}")
+    print(f"X_train.shape: {X_train.shape}")
+    print(f"X_validation.shape: {X_validation.shape}")
+    print(f"X_test.shape: {X_test.shape}")
+    print(f"y_train.shape: {y_train.shape}")
+    print(f"y_validation.shape: {y_validation.shape}")
+    print(f"y_test.shape: {y_test.shape}")
 
-        num_neighbors = NUM_NEIGHBORS_TO_TRY[num_neighbors_idx]
-        num_pcs = NUM_PCS_TO_TRY[num_pcs_idx]
+    return X_train, X_validation, X_test, y_train, y_validation, y_test
 
-        ## Get PCA-transformed data (all of training, validation, and test).
 
-        PCs_X_train = np.array([pca_model.transform(w)[:, :num_pcs] for w in X_train])
-        PCs_X_validation = np.array(
-            [pca_model.transform(w)[:, :num_pcs] for w in X_validation]
-        )
-        PCs_X_test = np.array([pca_model.transform(w)[:, :num_pcs] for w in X_test])
-        # Smooth the PCs over time.
-        PCs_smoothed_X_train = np.array(
-            [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in PCs_X_train]
-        )
-        PCs_smoothed_X_validation = np.array(
-            [
-                gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0)
-                for w in PCs_X_validation
-            ]
-        )
-        PCs_smoothed_X_test = np.array(
-            [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in PCs_X_test]
-        )
-        # Flatten the PCs so that a decoder can operate on 1D vectors.
-        PCs_flattened_X_train = np.reshape(
-            PCs_smoothed_X_train, (PCs_smoothed_X_train.shape[0], -1)
-        )
-        PCs_flattened_X_validation = np.reshape(
-            PCs_smoothed_X_validation, (PCs_smoothed_X_validation.shape[0], -1)
-        )
-        PCs_flattened_X_test = np.reshape(
-            PCs_smoothed_X_test, (PCs_smoothed_X_test.shape[0], -1)
-        )
+def plot_confusion_matrix(y_test, y_pred_test, accuracy_str):
+    """"""
 
-        ## Train a k-nearest neighbors model on the preprocessed training data.
-
-        print("Training k-nearest neighbors model ...")
-
-        knn_model = KNeighborsClassifier(n_neighbors=num_neighbors)
-        knn_model.fit(PCs_flattened_X_train, y_train)
-
-        ## Evaluate the k-nearest neighbors model on the preprocessed test data.
-
-        y_pred_validation = knn_model.predict(PCs_flattened_X_validation)
-
-        validation_accuracy = np.sum(y_pred_validation == y_validation) / len(
-            y_validation
-        )
-
-        validation_accuracies[num_neighbors_idx, num_pcs_idx] = validation_accuracy
-
-        if validation_accuracy > best_accuracy_so_far:
-            best_model_so_far = knn_model
-            best_hyperparams_so_far = {
-                "num_neighbors": num_neighbors,
-                "num_pcs": num_pcs,
-            }
-            X_test_to_evaluate_on = PCs_flattened_X_test
-            best_accuracy_so_far = validation_accuracy
-
-    ## Plot the confusion matrix of the best-performing model.
-
-    fig, (confusion_ax, hyperparam_ax) = plt.subplots(1, 2)
-
-    y_pred_test = best_model_so_far.predict(X_test_to_evaluate_on)
-
-    test_accuracy = np.sum(y_pred_test == y_test) / len(y_test)
+    fig, confusion_ax = plt.subplots()
 
     confusion_results = confusion_matrix(y_test, y_pred_test, normalize="true")
 
@@ -284,64 +279,14 @@ def main():
     confusion_ax.set_yticklabels(ALL_CHARS)
     confusion_ax.set_ylabel("true character")
 
-    accuracy_str = f"{round(test_accuracy, 2):.2f}"
-    confusion_ax.plot(
-        [], [], alpha=0, label=f"{best_hyperparams_so_far['num_neighbors']} neighbors"
-    )
-    confusion_ax.plot(
-        [], [], alpha=0, label=f"{best_hyperparams_so_far['num_pcs']} PCs"
-    )
-    confusion_ax.plot([], [], alpha=0, label=f"{accuracy_str} accuracy")
-    confusion_ax.legend()
-
-    confusion_ax.set_title("Results on test data")
-
-    ## Plot the performance grid of hyperparameter choices.
-
-    heatmap = hyperparam_ax.imshow(validation_accuracies, cmap=plt.cm.Blues_r)
-
-    # Display the accuracy in each square.
-    for num_neighbors_idx, num_pcs_idx in itertools.product(
-        range(len(NUM_NEIGHBORS_TO_TRY)), range(len(NUM_PCS_TO_TRY))
-    ):
-        hyperparam_ax.text(
-            num_pcs_idx,
-            num_neighbors_idx,
-            f"{validation_accuracies[num_neighbors_idx, num_pcs_idx]:.3f}",
-            ha="center",
-            va="center",
-        )
-
-    hyperparam_ax.set_xticks(range(len(NUM_PCS_TO_TRY)))
-    hyperparam_ax.set_xticklabels(
-        [f"{b:.2f}" for b in NUM_PCS_TO_TRY], rotation=45, ha="right"
-    )
-    hyperparam_ax.set_xlabel("num PCs")
-
-    hyperparam_ax.set_yticks(np.arange(len(NUM_NEIGHBORS_TO_TRY)))
-    hyperparam_ax.set_yticklabels([f"{a:.2f}" for a in NUM_NEIGHBORS_TO_TRY])
-    hyperparam_ax.set_ylabel("num neighbors")
-
-    fig.colorbar(heatmap, ax=hyperparam_ax, label="accuracy")
-
-    hyperparam_ax.set_title("Accuracies on validation data")
-
     model_str = "KNearestNeighbors"
-    fig.suptitle(f"{model_str} on single-letter instructed-delay task")
+    confusion_ax.set_title(
+        f"{model_str} on single-letter instructed-delay task (accuracy: {accuracy_str})"
+    )
 
-    fig.set_figwidth(20)
-    fig.set_figheight(20)
+    plt.tight_layout()
 
-    plt.tight_layout(rect=[0.0, 0.0, 1.0, 0.9])
-
-    if save_plots:
-        # Save the figure.
-        Path(OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
-        plot_filename = f"first_session_single_character_performance_{model_str}.png"
-        plot_filepath = os.path.join(OUTPUTS_DIR, plot_filename)
-        plt.savefig(plot_filepath)
-    else:
-        plt.show()
+    plt.show()
 
 
 if __name__ == "__main__":

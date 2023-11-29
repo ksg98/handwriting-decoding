@@ -62,22 +62,17 @@ def main():
             data_dicts
         )
 
-        ## Flatten each trial's neural data for decoders that operate on 1D vectors.
-
-        flattened_X_train = np.reshape(X_train, (X_train.shape[0], -1))
-        flattened_X_validation = np.reshape(X_validation, (X_validation.shape[0], -1))
-        flattened_X_test = np.reshape(X_test, (X_test.shape[0], -1))
-
         ## Train a logistic regression model on the preprocessed training data.
 
         print("Training logistic regression model ...")
 
         logistic_regression_model = LogisticRegression(solver="newton-cg")
-        logistic_regression_model.fit(flattened_X_train, y_train)
+        logistic_regression_model.fit(X_train, y_train)
 
-        ## Evaluate logistic regression model by calculating accuracy on the test set.
+        ## Evaluate the logistic regression model by calculating accuracy on the test
+        ## set.
 
-        y_pred_test = logistic_regression_model.predict(flattened_X_test)
+        y_pred_test = logistic_regression_model.predict(X_test)
 
         test_accuracy = np.sum(y_pred_test == y_test) / len(y_test)
         
@@ -91,30 +86,7 @@ def main():
 
         show_confusion_matrix = False
         if show_confusion_matrix:
-            fig, confusion_ax = plt.subplots()
-
-            confusion_results = confusion_matrix(y_test, y_pred_test, normalize="true")
-
-            heatmap = confusion_ax.imshow(confusion_results, origin="lower")
-
-            fig.colorbar(heatmap, ax=confusion_ax)
-
-            confusion_ax.set_xticks(np.arange(len(ALL_CHARS)))
-            confusion_ax.set_xticklabels(ALL_CHARS, rotation=45, ha="right")
-            confusion_ax.set_xlabel("predicted character")
-
-            confusion_ax.set_yticks(np.arange(len(ALL_CHARS)))
-            confusion_ax.set_yticklabels(ALL_CHARS)
-            confusion_ax.set_ylabel("true character")
-
-            model_str = "LogisticRegression"
-            confusion_ax.set_title(
-                f"{model_str} on single-letter instructed-delay task (accuracy: {accuracy_str})"
-            )
-
-            plt.tight_layout()
-
-            plt.show()
+            plot_confusion_matrix(y_test, y_pred_test, accuracy_str)
 
     print(f"LogisticRegression accuracies: {lr_accuracy_results}")
     print(f"LogisticRegression mean accuracy: {np.mean(lr_accuracy_results)}")
@@ -252,6 +224,11 @@ def organize_data(data_dicts):
         [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_test]
     )
 
+    # Flatten each trial's neural data since the model operates on 1D vectors.
+    X_train = np.reshape(X_train, (X_train.shape[0], -1))
+    X_validation = np.reshape(X_validation, (X_validation.shape[0], -1))
+    X_test = np.reshape(X_test, (X_test.shape[0], -1))
+
     # Convert the characters to ints, for compatibility with pytorch.
     y_train = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_train])
     y_validation = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_validation])
@@ -265,6 +242,35 @@ def organize_data(data_dicts):
     print(f"y_test.shape: {y_test.shape}")
 
     return X_train, X_validation, X_test, y_train, y_validation, y_test
+
+
+def plot_confusion_matrix(y_test, y_pred_test, accuracy_str):
+    """"""
+
+    fig, confusion_ax = plt.subplots()
+
+    confusion_results = confusion_matrix(y_test, y_pred_test, normalize="true")
+
+    heatmap = confusion_ax.imshow(confusion_results, origin="lower")
+
+    fig.colorbar(heatmap, ax=confusion_ax)
+
+    confusion_ax.set_xticks(np.arange(len(ALL_CHARS)))
+    confusion_ax.set_xticklabels(ALL_CHARS, rotation=45, ha="right")
+    confusion_ax.set_xlabel("predicted character")
+
+    confusion_ax.set_yticks(np.arange(len(ALL_CHARS)))
+    confusion_ax.set_yticklabels(ALL_CHARS)
+    confusion_ax.set_ylabel("true character")
+
+    model_str = "LogisticRegression"
+    confusion_ax.set_title(
+        f"{model_str} on single-letter instructed-delay task (accuracy: {accuracy_str})"
+    )
+
+    plt.tight_layout()
+
+    plt.show()
 
 
 if __name__ == "__main__":

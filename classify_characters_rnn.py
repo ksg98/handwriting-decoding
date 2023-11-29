@@ -22,7 +22,6 @@ from matplotlib import colormaps
 MATPLOTLIB_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
 ALL_CHARS = [
-    # "doNothing",
     *string.ascii_lowercase,
     "greaterThan",
     "tilde",
@@ -31,7 +30,6 @@ ALL_CHARS = [
     "comma",
 ]
 CHAR_REPLACEMENTS = {
-    "doNothing": "rest",
     "greaterThan": ">",
     "tilde": "~",
     "questionMark": "?",
