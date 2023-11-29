@@ -1,17 +1,11 @@
-import argparse
 import os
-from pathlib import Path
-import time
-import sys
 import string
-import itertools
 import random
 from collections import Counter
 
 import numpy as np
 from scipy.io import loadmat
 from scipy.ndimage import gaussian_filter1d
-from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import confusion_matrix
 from matplotlib import pyplot as plt
@@ -53,62 +47,82 @@ def main():
 
     data_dicts = load_data()
 
-    ## Preprocess and label the data.
+    ## Run the whole process multiple times to get a series of results.
 
-    X_train, X_validation, X_test, y_train, y_validation, y_test = organize_data(
-        data_dicts
-    )
+    NUM_RUNS = 5
 
-    ## Flatten each trial's neural data for decoders that operate on 1D vectors.
+    lr_accuracy_results = []
 
-    flattened_X_train = np.reshape(X_train, (X_train.shape[0], -1))
-    flattened_X_validation = np.reshape(X_validation, (X_validation.shape[0], -1))
-    flattened_X_test = np.reshape(X_test, (X_test.shape[0], -1))
+    for run_idx in range(NUM_RUNS):
+        print(f"LogisticRegression run {run_idx + 1} / {NUM_RUNS}")
 
-    ## Train a logistic regression model on the preprocessed training data.
+        ## Preprocess and label the data.
 
-    print("Training logistic regression model ...")
-
-    logistic_regression_model = LogisticRegression(solver="newton-cg")
-    logistic_regression_model.fit(flattened_X_train, y_train)
-
-    ## Evaluate logistic regression model by calculating accuracy on the test set.
-
-    y_pred_test = logistic_regression_model.predict(flattened_X_test)
-
-    test_accuracy = np.sum(y_pred_test == y_test) / len(y_test)
-
-    accuracy_str = f"{round(test_accuracy, 3):.3f}"
-    print(f"accuracy: {accuracy_str}")
-
-    ## Optionally plot the confusion matrix.
-
-    show_confusion_matrix = False
-    if show_confusion_matrix:
-        fig, confusion_ax = plt.subplots()
-
-        confusion_results = confusion_matrix(y_test, y_pred_test, normalize="true")
-
-        heatmap = confusion_ax.imshow(confusion_results, origin="lower")
-
-        fig.colorbar(heatmap, ax=confusion_ax)
-
-        confusion_ax.set_xticks(np.arange(len(ALL_CHARS)))
-        confusion_ax.set_xticklabels(ALL_CHARS, rotation=45, ha="right")
-        confusion_ax.set_xlabel("predicted character")
-
-        confusion_ax.set_yticks(np.arange(len(ALL_CHARS)))
-        confusion_ax.set_yticklabels(ALL_CHARS)
-        confusion_ax.set_ylabel("true character")
-
-        model_str = "LogisticRegression"
-        confusion_ax.set_title(
-            f"{model_str} on single-letter instructed-delay task (accuracy: {accuracy_str})"
+        X_train, X_validation, X_test, y_train, y_validation, y_test = organize_data(
+            data_dicts
         )
 
-        plt.tight_layout()
+        ## Flatten each trial's neural data for decoders that operate on 1D vectors.
 
-        plt.show()
+        flattened_X_train = np.reshape(X_train, (X_train.shape[0], -1))
+        flattened_X_validation = np.reshape(X_validation, (X_validation.shape[0], -1))
+        flattened_X_test = np.reshape(X_test, (X_test.shape[0], -1))
+
+        ## Train a logistic regression model on the preprocessed training data.
+
+        print("Training logistic regression model ...")
+
+        logistic_regression_model = LogisticRegression(solver="newton-cg")
+        logistic_regression_model.fit(flattened_X_train, y_train)
+
+        ## Evaluate logistic regression model by calculating accuracy on the test set.
+
+        y_pred_test = logistic_regression_model.predict(flattened_X_test)
+
+        test_accuracy = np.sum(y_pred_test == y_test) / len(y_test)
+        
+        # Store this run's result.
+        lr_accuracy_results.append(test_accuracy)
+
+        accuracy_str = f"{round(test_accuracy, 3):.3f}"
+        print(f"accuracy: {accuracy_str}")
+
+        ## Optionally plot the confusion matrix.
+
+        show_confusion_matrix = False
+        if show_confusion_matrix:
+            fig, confusion_ax = plt.subplots()
+
+            confusion_results = confusion_matrix(y_test, y_pred_test, normalize="true")
+
+            heatmap = confusion_ax.imshow(confusion_results, origin="lower")
+
+            fig.colorbar(heatmap, ax=confusion_ax)
+
+            confusion_ax.set_xticks(np.arange(len(ALL_CHARS)))
+            confusion_ax.set_xticklabels(ALL_CHARS, rotation=45, ha="right")
+            confusion_ax.set_xlabel("predicted character")
+
+            confusion_ax.set_yticks(np.arange(len(ALL_CHARS)))
+            confusion_ax.set_yticklabels(ALL_CHARS)
+            confusion_ax.set_ylabel("true character")
+
+            model_str = "LogisticRegression"
+            confusion_ax.set_title(
+                f"{model_str} on single-letter instructed-delay task (accuracy: {accuracy_str})"
+            )
+
+            plt.tight_layout()
+
+            plt.show()
+
+    print(f"LogisticRegression accuracies: {lr_accuracy_results}")
+    print(f"LogisticRegression mean accuracy: {np.mean(lr_accuracy_results)}")
+
+
+########################################################################################
+# Helper functions.
+########################################################################################
 
 
 def load_data():
