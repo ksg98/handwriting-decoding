@@ -36,6 +36,8 @@ CLASS_TO_CHAR_MAP = {idx: char for idx, char in enumerate(ALL_CHARS)}
 REACTION_TIME_BINS = 10
 TRAINING_WINDOW_BINS = 150
 
+NUM_ELECTRODES = 192
+
 OUTPUTS_DIR = os.path.abspath("./outputs")
 
 
@@ -44,55 +46,36 @@ OUTPUTS_DIR = os.path.abspath("./outputs")
 ########################################################################################
 
 
-def main():
+def main_KNN():
     ## Load the data.
 
     data_dicts = load_data()
 
     ## Run the whole process multiple times to get a series of results.
 
-    NUM_RUNS = 5
+    accuracy_KNN = run_multiple_KNN(data_dicts)
+    print(f"accuracy_KNN: {accuracy_KNN}")
 
-    knn_accuracy_results = []
+    ## Vary number of electrodes.
 
-    for run_idx in range(NUM_RUNS):
-        print(f"KNearestNeighbors run {run_idx + 1} / {NUM_RUNS}")
+    NUM_ELECTRODES_TO_TRY = [48, 96, 144, None]
 
-        ## Preprocess and label the data.
+    accuracies_by_electrodes_KNN = [
+        run_multiple_KNN(data_dicts, num_electrodes=num_electrodes)
+        for num_electrodes in NUM_ELECTRODES_TO_TRY
+    ]
+    print(f"accuracies_by_electrodes_KNN: {accuracies_by_electrodes_KNN}")
 
-        X_train, X_validation, X_test, y_train, y_validation, y_test = organize_data(
-            data_dicts
-        )
+    ## Vary number of training trials.
 
-        ## Train a k-nearest neighbors model on the preprocessed training data.
+    NUM_TRAIN_TRIALS_TO_TRY = [300, 600, 900, 1200, 1500, 1800, None]
 
-        print("Training k-nearest neighbors model ...")
+    accuracies_by_train_trials_KNN = [
+        run_multiple_KNN(data_dicts, num_train_trials=num_train_trials)
+        for num_train_trials in NUM_TRAIN_TRIALS_TO_TRY
+    ]
+    print(f"accuracies_by_train_trials_KNN: {accuracies_by_train_trials_KNN}")
 
-        NUM_NEIGHBORS = 5
-        knn_model = KNeighborsClassifier(n_neighbors=NUM_NEIGHBORS)
-        knn_model.fit(X_train, y_train)
-
-        ## Evaluate the k-nearest neighbors model by calculating accuracy on the test
-        ## set.
-
-        y_pred_test = knn_model.predict(X_test)
-
-        test_accuracy = np.sum(y_pred_test == y_test) / len(y_test)
-        
-        # Store this run's result.
-        knn_accuracy_results.append(test_accuracy)
-
-        accuracy_str = f"{round(test_accuracy, 3):.3f}"
-        print(f"accuracy: {accuracy_str}")
-
-        ## Optionally plot the confusion matrix.
-
-        show_confusion_matrix = False
-        if show_confusion_matrix:
-            plot_confusion_matrix(y_test, y_pred_test, accuracy_str)
-
-    print(f"KNearestNeighbors accuracies: {knn_accuracy_results}")
-    print(f"KNearestNeighbors mean accuracy: {np.mean(knn_accuracy_results)}")
 
 ########################################################################################
 # Helper functions.
@@ -120,7 +103,7 @@ def load_data():
     return data_dicts
 
 
-def organize_data(data_dicts):
+def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
     """"""
 
     print("Preparing data ...")
@@ -135,6 +118,10 @@ def organize_data(data_dicts):
     validation_count_by_char = Counter()
     test_count_by_char = Counter()
 
+    # Random electrode order to let us limit electrodes.
+    rand_electrode_order = list(range(NUM_ELECTRODES))
+    random.shuffle(rand_electrode_order)
+
     # Iterate through the sessions.
     # NUM_SESSIONS = 1
     NUM_SESSIONS = None
@@ -145,6 +132,10 @@ def organize_data(data_dicts):
         prompts = np.array([a[0] for a in data_dict["characterCues"].ravel()])
         block_by_bin = data_dict["blockNumsTimeSeries"].ravel()
         block_nums = data_dict["blockList"].ravel()
+
+        # If specified, only use a random subset of electrodes.
+        if limit_electrodes is not None:
+            neural = neural[:, rand_electrode_order[:limit_electrodes]]
 
         # Iterate through each block in this session.
         for block_num in block_nums:
@@ -223,9 +214,7 @@ def organize_data(data_dicts):
     # Get PCA-transformed data (all of training, validation, and test).
     NUM_PCS = 25
     X_train = np.array([pca_model.transform(w)[:, :NUM_PCS] for w in X_train])
-    X_validation = np.array(
-        [pca_model.transform(w)[:, :NUM_PCS] for w in X_validation]
-    )
+    X_validation = np.array([pca_model.transform(w)[:, :NUM_PCS] for w in X_validation])
     X_test = np.array([pca_model.transform(w)[:, :NUM_PCS] for w in X_test])
 
     # Smooth the neural data over time.
@@ -249,6 +238,11 @@ def organize_data(data_dicts):
     y_train = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_train])
     y_validation = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_validation])
     y_test = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_test])
+
+    # If specified, only use a random subset of train trials.
+    if limit_train_trials:
+        X_train = X_train[:limit_train_trials]
+        y_train = y_train[:limit_train_trials]
 
     print(f"X_train.shape: {X_train.shape}")
     print(f"X_validation.shape: {X_validation.shape}")
@@ -289,5 +283,58 @@ def plot_confusion_matrix(y_test, y_pred_test, accuracy_str):
     plt.show()
 
 
+def run_multiple_KNN(
+    data_dicts, num_electrodes=None, num_train_trials=None, num_runs=5
+):
+    """"""
+
+    accuracy_results = []
+
+    for run_idx in range(num_runs):
+        print(f"KNearestNeighbors run {run_idx + 1} / {num_runs}")
+
+        ## Preprocess and label the data.
+
+        X_train, X_validation, X_test, y_train, y_validation, y_test = organize_data(
+            data_dicts,
+            limit_electrodes=num_electrodes,
+            limit_train_trials=num_train_trials,
+        )
+
+        ## Train a k-nearest neighbors model on the preprocessed training data.
+
+        print("Training k-nearest neighbors model ...")
+
+        NUM_NEIGHBORS = 5
+        knn_model = KNeighborsClassifier(n_neighbors=NUM_NEIGHBORS)
+        knn_model.fit(X_train, y_train)
+
+        ## Evaluate the k-nearest neighbors model by calculating accuracy on the test
+        ## set.
+
+        y_pred_test = knn_model.predict(X_test)
+
+        test_accuracy = np.sum(y_pred_test == y_test) / len(y_test)
+
+        # Store this run's result.
+        accuracy_results.append(test_accuracy)
+
+        accuracy_str = f"{round(test_accuracy, 3):.3f}"
+        print(f"accuracy: {accuracy_str}")
+
+        ## Optionally plot the confusion matrix.
+
+        show_confusion_matrix = False
+        if show_confusion_matrix:
+            plot_confusion_matrix(y_test, y_pred_test, accuracy_str)
+
+    mean_accuracy = np.mean(accuracy_results)
+
+    print(f"accuracies: {accuracy_results}")
+    print(f"mean accuracy: {np.mean(accuracy_results)}")
+
+    return mean_accuracy
+
+
 if __name__ == "__main__":
-    main()
+    main_KNN()

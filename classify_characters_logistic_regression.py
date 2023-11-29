@@ -225,6 +225,7 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
     y_validation = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_validation])
     y_test = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_test])
 
+    # If specified, only use a random subset of train trials.
     if limit_train_trials:
         X_train = X_train[:limit_train_trials]
         y_train = y_train[:limit_train_trials]
