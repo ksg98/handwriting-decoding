@@ -75,7 +75,7 @@ def main():
         y_pred_test = logistic_regression_model.predict(X_test)
 
         test_accuracy = np.sum(y_pred_test == y_test) / len(y_test)
-        
+
         # Store this run's result.
         lr_accuracy_results.append(test_accuracy)
 
