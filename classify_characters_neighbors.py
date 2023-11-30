@@ -58,7 +58,7 @@ def main_KNN():
 
     ## Vary number of electrodes.
 
-    NUM_ELECTRODES_TO_TRY = [48, 96, 144, None]
+    NUM_ELECTRODES_TO_TRY = [48, 96, 144, 192]
 
     accuracies_by_electrodes_KNN = [
         run_multiple_KNN(data_dicts, num_electrodes=num_electrodes)
@@ -68,7 +68,7 @@ def main_KNN():
 
     ## Vary number of training trials.
 
-    NUM_TRAIN_TRIALS_TO_TRY = [300, 600, 900, 1200, 1500, 1800, None]
+    NUM_TRAIN_TRIALS_TO_TRY = [300, 600, 900, 1200, 1500, 1800, 2100]
 
     accuracies_by_train_trials_KNN = [
         run_multiple_KNN(data_dicts, num_train_trials=num_train_trials)

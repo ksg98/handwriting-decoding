@@ -1,17 +1,15 @@
 import argparse
 import os
 from pathlib import Path
-import time
-import sys
 import string
+from copy import copy
+import random
 
 import numpy as np
 from scipy.io import loadmat
 from scipy.ndimage import gaussian_filter1d
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-from sklearn.linear_model import LogisticRegression
-from sklearn.neighbors import KNeighborsClassifier
 from matplotlib import pyplot as plt
 from matplotlib import colormaps
 
@@ -39,7 +37,7 @@ CHAR_TO_CLASS_MAP = {char: idx for idx, char in enumerate(ALL_CHARS)}
 CLASS_TO_CHAR_MAP = {idx: char for idx, char in enumerate(ALL_CHARS)}
 
 PRE_GO_CUE_BINS = 50
-POST_GO_CUE_BINS = 120
+POST_GO_CUE_BINS = 150
 
 OUTPUTS_DIR = os.path.abspath("./outputs")
 
@@ -251,6 +249,7 @@ def plot_PCs(
                 ax.imshow(
                     session_trial_PCs_smoothed_by_char[char][:, :, pc_idx],
                     cmap=colormaps["bwr"],
+                    aspect=3,
                 )
 
                 ax.axvline(PRE_GO_CUE_BINS, color="black")  # put a line at the go cue
@@ -287,10 +286,15 @@ def plot_tSNE(
     save_plots,
 ):
     """Plot the t-SNE projections of the trials in 2D space."""
+    TSNE_COLORS = []
+    for _ in range(5):
+        colors = copy(MATPLOTLIB_COLORS)
+        random.shuffle(colors)
+        TSNE_COLORS.extend(colors)
 
     ## Separate out each session.
 
-    all_session_idxs = sorted(set(trial_session_idxs))[:1]
+    all_session_idxs = sorted(set(trial_session_idxs))[:1]  # using 1 session for now
 
     num_plots = len(all_session_idxs)
     num_cols = int(np.ceil(np.sqrt(num_plots)))
@@ -315,16 +319,17 @@ def plot_tSNE(
 
         # Transform the neural activity using our PCA model trained on all sessions.
         session_pca_model = session_pca_models[session_idx]
-        session_trial_PCs = np.array(
-            [session_pca_model.transform(w) for w in session_trial_neural_activities]
-        )
+        # session_trial_PCs = np.array(
+        #     [session_pca_model.transform(w) for w in session_trial_neural_activities]
+        # )
+        session_trial_PCs = session_trial_neural_activities
         # Smooth the PCs over time.
         session_trial_PCs_smoothed = np.array(
             [gaussian_filter1d(w, sigma=3.0, axis=0) for w in session_trial_PCs]
         )
-        # Take just the window starting at the go cue.
+        # Take just the window starting soon after the go cue.
         session_trial_PCs_windowed = session_trial_PCs_smoothed[
-            :, PRE_GO_CUE_BINS : PRE_GO_CUE_BINS + POST_GO_CUE_BINS
+            :, PRE_GO_CUE_BINS + 10 : PRE_GO_CUE_BINS + 10 + POST_GO_CUE_BINS
         ]
         # Flatten the PCs so tSNE can operate on 1D vectors.
         session_trial_PCs_flattened = np.reshape(
@@ -345,13 +350,14 @@ def plot_tSNE(
             char_trials_projected = trials_projected[session_trial_labels == char]
             if len(char_trials_projected) == 0:
                 continue
-            color_idx = char_idx % len(MATPLOTLIB_COLORS)
-            color = MATPLOTLIB_COLORS[color_idx]
+            color_idx = char_idx % len(TSNE_COLORS)
+            color = TSNE_COLORS[color_idx]
             ax.scatter(
                 char_trials_projected[:, 0],
                 char_trials_projected[:, 1],
+                s=80,
                 color=color,
-                alpha=0.8,
+                # alpha=0.8,
                 label=char,
             )
             # Label the cluster with the char text itself located at the mean point.
@@ -361,7 +367,7 @@ def plot_tSNE(
                 char_mean[1],
                 CHAR_REPLACEMENTS.get(char, char),
                 color=color,
-                fontsize=16,
+                fontsize=48,
                 fontweight="bold",
             )
 
@@ -371,7 +377,7 @@ def plot_tSNE(
             ax.set_ylabel("t-SNE axis 1")
             ax.set_yticks([])
 
-        ax.set_title(f"Session {session_idx}")
+        # ax.set_title(f"Session {session_idx}")
 
     # Turn off the unused subplots.
     for ax_idx in range(num_plots, num_rows * num_cols):
@@ -380,17 +386,17 @@ def plot_tSNE(
         ax = axs[row_idx, col_idx]
         ax.axis("off")
 
-    fig.set_figwidth(20)
-    fig.set_figheight(20)
+    fig.set_figwidth(10)
+    fig.set_figheight(10)
 
     fig.tight_layout()
 
     if save_plots:
         # Save the figure.
         Path(OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
-        plot_filename = f"neural_activity_tSNE_projections.png"
+        plot_filename = f"neural_activity_tSNE_projections.svg"
         plot_filepath = os.path.join(OUTPUTS_DIR, plot_filename)
-        plt.savefig(plot_filepath)
+        plt.savefig(plot_filepath, format="svg")
         plt.close()
     else:
         plt.show()
