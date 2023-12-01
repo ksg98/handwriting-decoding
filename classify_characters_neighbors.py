@@ -1,8 +1,6 @@
 import os
 import string
-import itertools
 import random
-from collections import Counter
 
 import numpy as np
 from scipy.io import loadmat
@@ -58,7 +56,7 @@ def main_KNN():
 
     ## Vary number of electrodes.
 
-    NUM_ELECTRODES_TO_TRY = [48, 96, 144, 192]
+    NUM_ELECTRODES_TO_TRY = [24, 48, 72, 96, 120, 144, 168, 192]
 
     accuracies_by_electrodes_KNN = [
         run_multiple_KNN(data_dicts, num_electrodes=num_electrodes)
@@ -68,7 +66,7 @@ def main_KNN():
 
     ## Vary number of training trials.
 
-    NUM_TRAIN_TRIALS_TO_TRY = [300, 600, 900, 1200, 1500, 1800, 2100]
+    NUM_TRAIN_TRIALS_TO_TRY = [300, 600, 900, 1200, 1500, 1800, 2100, 2400, 2700]
 
     accuracies_by_train_trials_KNN = [
         run_multiple_KNN(data_dicts, num_train_trials=num_train_trials)
@@ -109,14 +107,9 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
     print("Preparing data ...")
 
     X_train = []
-    X_validation = []
     X_test = []
     y_train = []
-    y_validation = []
     y_test = []
-
-    validation_count_by_char = Counter()
-    test_count_by_char = Counter()
 
     # Random electrode order to let us limit electrodes.
     rand_electrode_order = list(range(NUM_ELECTRODES))
@@ -140,12 +133,12 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
         # Iterate through each block in this session.
         for block_num in block_nums:
             # Get means and stddevs from a random set of train trials in the block, and
-            # the rest of the trials can be used for validation and test.
+            # the rest of the trials can be used for test.
             block_trial_mask = [block_by_bin[b] == block_num for b in go_cue_bins]
             num_trials_in_block = sum(block_trial_mask)
             random_trial_idxs = list(range(num_trials_in_block))
             random.shuffle(random_trial_idxs)
-            train_end_idx = int(num_trials_in_block * 0.6)
+            train_end_idx = int(num_trials_in_block * 0.8)
             train_trial_idxs = random_trial_idxs[:train_end_idx]
             block_go_cue_bins = go_cue_bins[block_trial_mask]
             block_delay_cue_bins = delay_cue_bins[block_trial_mask]
@@ -163,7 +156,6 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
             block_means = np.mean(neural_to_zscore_based_on, axis=0)
             block_stddevs = np.std(neural_to_zscore_based_on, axis=0)
 
-            print(f"Creating labeled pairs for block {block_num} ...")
             for trial_idx in range(num_trials_in_block):
                 # Get the training window for this trial.
                 go_cue_bin = block_go_cue_bins[trial_idx]
@@ -185,25 +177,13 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
                 if trial_label == "doNothing":
                     continue
 
-                # Add the trial to the appropriate set of data (train, validation, or
-                # test).
+                # Add the trial to the appropriate set of data (train or test).
                 if trial_idx in train_trial_idxs:
                     X_train.append(trial_zscored_neural)
                     y_train.append(trial_label)
                 else:
-                    # Put the trial into either validation or test, whichever has fewer
-                    # of this trial's character so far.
-                    if (
-                        validation_count_by_char[trial_label]
-                        < test_count_by_char[trial_label]
-                    ):
-                        X_validation.append(trial_zscored_neural)
-                        y_validation.append(trial_label)
-                        validation_count_by_char[trial_label] += 1
-                    else:
-                        X_test.append(trial_zscored_neural)
-                        y_test.append(trial_label)
-                        test_count_by_char[trial_label] += 1
+                    X_test.append(trial_zscored_neural)
+                    y_test.append(trial_label)
 
     # Fit a PCA model (only on the training data).
 
@@ -211,10 +191,9 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
 
     pca_model = PCA().fit(np.concatenate(X_train))
 
-    # Get PCA-transformed data (all of training, validation, and test).
-    NUM_PCS = 25
+    # Get PCA-transformed data (all of training and test).
+    NUM_PCS = 15
     X_train = np.array([pca_model.transform(w)[:, :NUM_PCS] for w in X_train])
-    X_validation = np.array([pca_model.transform(w)[:, :NUM_PCS] for w in X_validation])
     X_test = np.array([pca_model.transform(w)[:, :NUM_PCS] for w in X_test])
 
     # Smooth the neural data over time.
@@ -222,21 +201,16 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
     X_train = np.array(
         [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_train]
     )
-    X_validation = np.array(
-        [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_validation]
-    )
     X_test = np.array(
         [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_test]
     )
 
     # Flatten each trial's neural data since the model operates on 1D vectors.
     X_train = np.reshape(X_train, (X_train.shape[0], -1))
-    X_validation = np.reshape(X_validation, (X_validation.shape[0], -1))
     X_test = np.reshape(X_test, (X_test.shape[0], -1))
 
     # Convert the characters to ints, for compatibility with pytorch.
     y_train = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_train])
-    y_validation = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_validation])
     y_test = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_test])
 
     # If specified, only use a random subset of train trials.
@@ -245,13 +219,11 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
         y_train = y_train[:limit_train_trials]
 
     print(f"X_train.shape: {X_train.shape}")
-    print(f"X_validation.shape: {X_validation.shape}")
     print(f"X_test.shape: {X_test.shape}")
     print(f"y_train.shape: {y_train.shape}")
-    print(f"y_validation.shape: {y_validation.shape}")
     print(f"y_test.shape: {y_test.shape}")
 
-    return X_train, X_validation, X_test, y_train, y_validation, y_test
+    return X_train, X_test, y_train, y_test
 
 
 def plot_confusion_matrix(y_test, y_pred_test, accuracy_str):
@@ -295,7 +267,7 @@ def run_multiple_KNN(
 
         ## Preprocess and label the data.
 
-        X_train, X_validation, X_test, y_train, y_validation, y_test = organize_data(
+        X_train, X_test, y_train, y_test = organize_data(
             data_dicts,
             limit_electrodes=num_electrodes,
             limit_train_trials=num_train_trials,

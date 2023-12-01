@@ -1,22 +1,16 @@
-import argparse
 import os
 from pathlib import Path
 import time
-import sys
 import string
-import itertools
 import random
-from collections import Counter
 
 import numpy as np
 from scipy.io import loadmat
 from scipy.ndimage import gaussian_filter1d
 import torch
-import torch.nn.functional as F
 import torchview
 from sklearn.metrics import confusion_matrix
 from matplotlib import pyplot as plt
-from matplotlib import colormaps
 
 
 MATPLOTLIB_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
@@ -43,6 +37,8 @@ REACTION_TIME_BINS = 10
 TRAINING_WINDOW_BINS = 150
 SEQUENCE_LENGTH = TRAINING_WINDOW_BINS
 
+NUM_ELECTRODES = 192
+
 OUTPUTS_DIR = os.path.abspath("./outputs")
 
 
@@ -51,16 +47,44 @@ OUTPUTS_DIR = os.path.abspath("./outputs")
 ########################################################################################
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--save_plots", action="store_true")
-    parser.add_argument("--calc_chance", action="store_true")
-    args = parser.parse_args()
-    save_plots = args.save_plots
-    calc_chance = args.calc_chance
-
+def main_RNN():
     ## Load the data.
 
+    data_dicts = load_data()
+
+    ## Run the whole process multiple times to get a series of results.
+
+    accuracy_RNN = run_multiple_RNN(data_dicts)
+    print(f"accuracy_RNN: {accuracy_RNN}")
+
+    ## Vary number of electrodes.
+
+    NUM_ELECTRODES_TO_TRY = [24, 48, 72, 96, 120, 144, 168, 192]
+
+    accuracies_by_electrodes_RNN = [
+        run_multiple_RNN(data_dicts, num_electrodes=num_electrodes)
+        for num_electrodes in NUM_ELECTRODES_TO_TRY
+    ]
+    print(f"accuracies_by_electrodes_RNN: {accuracies_by_electrodes_RNN}")
+
+    ## Vary number of training trials.
+
+    NUM_TRAIN_TRIALS_TO_TRY = [300, 600, 900, 1200, 1500, 1800, 2100, 2400, 2700]
+
+    accuracies_by_train_trials_RNN = [
+        run_multiple_RNN(data_dicts, num_train_trials=num_train_trials)
+        for num_train_trials in NUM_TRAIN_TRIALS_TO_TRY
+    ]
+    print(f"accuracies_by_train_trials_RNN: {accuracies_by_train_trials_RNN}")
+
+
+########################################################################################
+# Helper functions.
+########################################################################################
+
+
+def load_data():
+    """"""
     DATA_DIR = os.path.abspath("./handwritingBCIData/Datasets/")
     letters_filepaths = []
     for root, _, filenames in os.walk(DATA_DIR):
@@ -76,21 +100,23 @@ def main():
         print(f"Loading {filepath} ...")
         data_dict = loadmat(filepath)
         data_dicts.append(data_dict)
-        # break  # for testing quickly
 
-    ## Preprocess and label the data.
+    return data_dicts
+
+
+def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
+    """"""
 
     print("Preparing data ...")
 
     X_train = []
-    X_validation = []
     X_test = []
     y_train = []
-    y_validation = []
     y_test = []
 
-    validation_count_by_char = Counter()
-    test_count_by_char = Counter()
+    # Random electrode order to let us limit electrodes.
+    rand_electrode_order = list(range(NUM_ELECTRODES))
+    random.shuffle(rand_electrode_order)
 
     # Iterate through the sessions.
     # NUM_SESSIONS = 1
@@ -103,10 +129,14 @@ def main():
         block_by_bin = data_dict["blockNumsTimeSeries"].ravel()
         block_nums = data_dict["blockList"].ravel()
 
+        # If specified, only use a random subset of electrodes.
+        if limit_electrodes is not None:
+            neural = neural[:, rand_electrode_order[:limit_electrodes]]
+
         # Iterate through each block in this session.
         for block_num in block_nums:
             # Get means and stddevs from a random set of train trials in the block, and
-            # the rest of the trials can be used for validation and test.
+            # the rest of the trials can be used for test.
             block_trial_mask = [block_by_bin[b] == block_num for b in go_cue_bins]
             num_trials_in_block = sum(block_trial_mask)
             random_trial_idxs = list(range(num_trials_in_block))
@@ -129,7 +159,6 @@ def main():
             block_means = np.mean(neural_to_zscore_based_on, axis=0)
             block_stddevs = np.std(neural_to_zscore_based_on, axis=0)
 
-            print(f"Creating labeled pairs for block {block_num} ...")
             for trial_idx in range(num_trials_in_block):
                 # Get the training window for this trial.
                 go_cue_bin = block_go_cue_bins[trial_idx]
@@ -151,33 +180,18 @@ def main():
                 if trial_label == "doNothing":
                     continue
 
-                # Add the trial to the appropriate set of data (train, validation, or
-                # test).
+                # Add the trial to the appropriate set of data (train or test).
                 if trial_idx in train_trial_idxs:
                     X_train.append(trial_zscored_neural)
                     y_train.append(trial_label)
                 else:
-                    # Put the trial into either validation or test, whichever has fewer
-                    # of this trial's character so far.
-                    if (
-                        validation_count_by_char[trial_label]
-                        < test_count_by_char[trial_label]
-                    ):
-                        X_validation.append(trial_zscored_neural)
-                        y_validation.append(trial_label)
-                        validation_count_by_char[trial_label] += 1
-                    else:
-                        X_test.append(trial_zscored_neural)
-                        y_test.append(trial_label)
-                        test_count_by_char[trial_label] += 1
+                    X_test.append(trial_zscored_neural)
+                    y_test.append(trial_label)
 
     # Smooth the neural data over time.
     SMOOTHING_STDDEV = 3.0
     X_train = np.array(
         [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_train]
-    )
-    X_validation = np.array(
-        [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_validation]
     )
     X_test = np.array(
         [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_test]
@@ -185,69 +199,19 @@ def main():
 
     # Convert the characters to ints, for compatibility with pytorch.
     y_train = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_train])
-    y_validation = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_validation])
     y_test = np.array([CHAR_TO_CLASS_MAP[ch] for ch in y_test])
 
+    # If specified, only use a random subset of train trials.
+    if limit_train_trials:
+        X_train = X_train[:limit_train_trials]
+        y_train = y_train[:limit_train_trials]
+
     print(f"X_train.shape: {X_train.shape}")
-    print(f"X_validation.shape: {X_validation.shape}")
     print(f"X_test.shape: {X_test.shape}")
     print(f"y_train.shape: {y_train.shape}")
-    print(f"y_validation.shape: {y_validation.shape}")
     print(f"y_test.shape: {y_test.shape}")
 
-    # To get chance-level performance, shuffle the training labels.
-    if calc_chance:
-        rg = np.random.default_rng()
-        rg.shuffle(y_train)
-        print("Shuffled training labels to calculate chance performance.")
-
-    ## Train an RNN model on the preprocessed training data.
-
-    rnn_model = train_recurrent_neural_network_classifier(
-        X_train, X_validation, y_train, y_validation, save_plots
-    )
-
-    ## Plot the confusion matrix of the best-performing model.
-
-    fig, confusion_ax = plt.subplots()
-
-    with torch.no_grad():
-        X_test = torch.from_numpy(X_test).float()
-        y_pred_test_1hot = rnn_model(X_test)
-        y_pred_test = np.argmax(y_pred_test_1hot, axis=1)
-
-    test_accuracy = sum(y_pred_test.detach().numpy() == y_test) / len(y_test)
-
-    confusion_results = confusion_matrix(y_test, y_pred_test, normalize="true")
-
-    heatmap = confusion_ax.imshow(confusion_results, origin="lower")
-
-    fig.colorbar(heatmap, ax=confusion_ax)
-
-    confusion_ax.set_xticks(np.arange(len(ALL_CHARS)))
-    confusion_ax.set_xticklabels(ALL_CHARS, rotation=45, ha="right")
-    confusion_ax.set_xlabel("predicted character")
-
-    confusion_ax.set_yticks(np.arange(len(ALL_CHARS)))
-    confusion_ax.set_yticklabels(ALL_CHARS)
-    confusion_ax.set_ylabel("true character")
-
-    model_str = "RNN"
-    accuracy_str = f"{round(test_accuracy, 3):.3f}"
-    confusion_ax.set_title(
-        f"{model_str} on single-letter instructed-delay task (accuracy: {accuracy_str})"
-    )
-
-    plt.tight_layout()
-
-    if save_plots:
-        # Save the figure.
-        Path(OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
-        plot_filename = f"single_character_performance_{model_str}.png"
-        plot_filepath = os.path.join(OUTPUTS_DIR, plot_filename)
-        plt.savefig(plot_filepath)
-    else:
-        plt.show()
+    return X_train, X_test, y_train, y_test
 
 
 class RNNClassifier(torch.nn.Module):
@@ -302,7 +266,7 @@ class RNNClassifier(torch.nn.Module):
 
 
 def train_recurrent_neural_network_classifier(
-    X_train, X_validation, y_train, y_validation, save_plots
+    X_train, X_test, y_train, y_test
 ):
     """
     Train an RNN model on the training data to yield a classifier we can evaluate.
@@ -314,7 +278,7 @@ def train_recurrent_neural_network_classifier(
 
     # Make training data tensors.
     X_train = torch.from_numpy(X_train).float()
-    X_validation = torch.from_numpy(X_validation).float()
+    X_test = torch.from_numpy(X_test).float()
     y_train = torch.from_numpy(y_train).long()
 
     # Define hyperparameters of the model.
@@ -348,7 +312,7 @@ def train_recurrent_neural_network_classifier(
 
     # Define hyperparameters of the training process.
     NUM_SAMPLES = X_train.shape[0]
-    NUM_EPOCHS = 50
+    NUM_EPOCHS = 2
     LEARNING_RATE = 0.0005
     MOMENTUM = 0.99
     WEIGHT_DECAY = 0.001
@@ -366,7 +330,7 @@ def train_recurrent_neural_network_classifier(
     )
 
     epoch_train_accuracies = []
-    epoch_validation_accuracies = []
+    epoch_test_accuracies = []
 
     # Run multiple epochs of training.
     for epoch_idx in range(NUM_EPOCHS):
@@ -421,28 +385,24 @@ def train_recurrent_neural_network_classifier(
         epoch_train_accuracy = epoch_train_samples_correct / epoch_train_samples
         epoch_train_accuracies.append(epoch_train_accuracy)
 
-        # Calculate accuracy on validation data.
+        # Calculate accuracy on test data.
         with torch.no_grad():
-            # Apply the RNN to get outputs for the validation set.
-            y_pred_validation_1hot = rnn_model(X_validation)
-            y_pred_validation = np.argmax(
-                y_pred_validation_1hot.detach().numpy(), axis=1
-            )
+            # Apply the RNN to get outputs for the test set.
+            y_pred_test_1hot = rnn_model(X_test)
+            y_pred_test = np.argmax(y_pred_test_1hot.detach().numpy(), axis=1)
 
-            # Calculate accuracy on validation set for this epoch.
-            epoch_validation_samples = len(y_pred_validation)
-            epoch_validation_samples_correct = sum(y_pred_validation == y_validation)
-            epoch_validation_accuracy = (
-                epoch_validation_samples_correct / epoch_validation_samples
-            )
-            epoch_validation_accuracies.append(epoch_validation_accuracy)
+            # Calculate accuracy on test set for this epoch.
+            epoch_test_samples = len(y_pred_test)
+            epoch_test_samples_correct = sum(y_pred_test == y_test)
+            epoch_test_accuracy = epoch_test_samples_correct / epoch_test_samples
+            epoch_test_accuracies.append(epoch_test_accuracy)
 
         # Periodically log progress and stats.
         if epoch_idx % LOG_EVERY_NUM_EPOCHS == 0:
             print(
                 f"finished epoch: {epoch_idx}/{NUM_EPOCHS}\t"
                 f"train accuracy: {round(epoch_train_accuracy, 4):.4f}\t"
-                f"validation accuracy: {round(epoch_validation_accuracy, 4):.4f}\t"
+                f"test accuracy: {round(epoch_test_accuracy, 4):.4f}\t"
                 f"{round(time.time() - s, 1):.1f} sec\t"
             )
 
@@ -450,31 +410,116 @@ def train_recurrent_neural_network_classifier(
 
     ## Plot the performance over the course of the training.
 
-    fig, ax = plt.subplots()
+    show_plot = False
+    if show_plot:
 
-    ax.plot(epoch_train_accuracies, label="train")
-    ax.plot(epoch_validation_accuracies, label="validation")
+        fig, ax = plt.subplots()
 
-    ax.set_xlabel("epoch")
+        ax.plot(epoch_train_accuracies, label="train")
+        ax.plot(epoch_test_accuracies, label="test")
 
-    ax.set_ylim(0.0, 1.1)
-    ax.set_ylabel("accuracy")
+        ax.set_xlabel("epoch")
 
-    ax.set_title("Performance over the course of training (RNN)")
+        ax.set_ylim(0.0, 1.1)
+        ax.set_ylabel("accuracy")
 
-    plt.tight_layout()
+        ax.set_title("Performance over the course of training (RNN)")
 
-    if save_plots:
-        # Save the figure.
-        Path(OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
-        plot_filename = f"training_process_during_RNN.png"
-        plot_filepath = os.path.join(OUTPUTS_DIR, plot_filename)
-        plt.savefig(plot_filepath)
-    else:
+        plt.tight_layout()
+
         plt.show()
 
     return rnn_model
 
 
+def plot_confusion_matrix(y_test, y_pred_test, accuracy_str):
+    """"""
+
+    fig, confusion_ax = plt.subplots()
+
+    confusion_results = confusion_matrix(y_test, y_pred_test, normalize="true")
+
+    heatmap = confusion_ax.imshow(confusion_results, origin="lower")
+
+    fig.colorbar(heatmap, ax=confusion_ax)
+
+    confusion_ax.set_xticks(np.arange(len(ALL_CHARS)))
+    confusion_ax.set_xticklabels(ALL_CHARS, rotation=45, ha="right")
+    confusion_ax.set_xlabel("predicted character")
+
+    confusion_ax.set_yticks(np.arange(len(ALL_CHARS)))
+    confusion_ax.set_yticklabels(ALL_CHARS)
+    confusion_ax.set_ylabel("true character")
+
+    model_str = "RNN"
+    confusion_ax.set_title(
+        f"{model_str} on single-letter instructed-delay task (accuracy: {accuracy_str})"
+    )
+
+    plt.tight_layout()
+
+    plt.show()
+
+
+def run_multiple_RNN(
+    data_dicts, num_electrodes=None, num_train_trials=None, num_runs=1
+):
+    """"""
+
+    accuracy_results = []
+
+    for run_idx in range(num_runs):
+        print(f"RNN run {run_idx + 1} / {num_runs}")
+
+        ## Preprocess and label the data.
+
+        X_train, X_test, y_train, y_test = organize_data(
+            data_dicts,
+            limit_electrodes=num_electrodes,
+            limit_train_trials=num_train_trials,
+        )
+
+        # To get chance-level performance, shuffle the training labels.
+        calc_chance = False
+        if calc_chance:
+            rg = np.random.default_rng()
+            rg.shuffle(y_train)
+            print("Shuffled training labels to calculate chance performance.")
+
+        ## Train an RNN model on the preprocessed training data.
+
+        rnn_model = train_recurrent_neural_network_classifier(
+            X_train, X_test, y_train, y_test
+        )
+
+        ## Evaluate the RNN model by calculating accuracy on the test set.
+
+        with torch.no_grad():
+            X_test = torch.from_numpy(X_test).float()
+            y_pred_test_1hot = rnn_model(X_test)
+            y_pred_test = np.argmax(y_pred_test_1hot, axis=1)
+
+        test_accuracy = sum(y_pred_test.detach().numpy() == y_test) / len(y_test)
+
+        # Store this run's result.
+        accuracy_results.append(test_accuracy)
+
+        accuracy_str = f"{round(test_accuracy, 3):.3f}"
+        print(f"accuracy: {accuracy_str}")
+
+        ## Optionally plot the confusion matrix.
+
+        show_confusion_matrix = False
+        if show_confusion_matrix:
+            plot_confusion_matrix(y_test, y_pred_test, accuracy_str)
+
+    mean_accuracy = np.mean(accuracy_results)
+
+    print(f"accuracies: {accuracy_results}")
+    print(f"mean accuracy: {np.mean(accuracy_results)}")
+
+    return mean_accuracy
+
+
 if __name__ == "__main__":
-    main()
+    main_RNN()
