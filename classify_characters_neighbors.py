@@ -355,7 +355,7 @@ def run_multiple_KNN(
 
         print("Training k-nearest neighbors model ...")
 
-        NUM_NEIGHBORS = 5
+        NUM_NEIGHBORS = 10
         knn_model = KNeighborsClassifier(
             n_neighbors=NUM_NEIGHBORS, metric=dist_with_time_warp
         )
@@ -363,6 +363,8 @@ def run_multiple_KNN(
 
         ## Evaluate the k-nearest neighbors model by calculating accuracy on the test
         ## set.
+
+        print("Evaluating k-nearest neighbors model ...")
 
         y_pred_test = knn_model.predict(X_test)
 

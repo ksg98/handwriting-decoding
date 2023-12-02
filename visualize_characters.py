@@ -426,7 +426,7 @@ def plot_tSNE(
 
         print("Fitting t-SNE model ...")
 
-        PERPLEXITY = 7
+        PERPLEXITY = 10
         tsne_model = TSNE(perplexity=PERPLEXITY, metric=dist_with_time_warp)
         trials_projected = tsne_model.fit_transform(session_trial_PCs_flattened)
 
@@ -444,7 +444,6 @@ def plot_tSNE(
                 char_trials_projected[:, 1],
                 s=80,
                 color=color,
-                # alpha=0.8,
                 label=char,
             )
             # Label the cluster with the char text itself located at the mean point.
@@ -454,8 +453,7 @@ def plot_tSNE(
                 char_mean[1],
                 CHAR_REPLACEMENTS.get(char, char),
                 color=color,
-                fontsize=48,
-                fontweight="bold",
+                fontsize=28,
             )
 
             ax.set_xlabel("t-SNE axis 0")
