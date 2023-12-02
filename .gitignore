@@ -162,6 +162,10 @@ cython_debug/
 #.idea/
 
 # My own misc stuff
+playground.py
 notes.md
 handwritingBCIData/
 outputs/
+figures/
+ECS 289 Project Report Guidelines.pdf
+ECS_289G_FINAL_REPORT.pdf
