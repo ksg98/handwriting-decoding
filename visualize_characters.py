@@ -41,6 +41,8 @@ POST_GO_CUE_BINS = 150
 
 NUM_PCS = 15
 
+WARPING_ALPHAS = np.linspace(1.0, 2.0, 11)
+
 OUTPUTS_DIR = os.path.abspath("./outputs")
 
 
@@ -304,31 +306,51 @@ def time_lengthen_and_slice_matrix(m, alpha):
     return new_m
 
 
-def dist_with_time_warp(m0, m1):
+def dist_with_time_warp(m0, m1, cache={}):
     """"""
     # The args have to be vectors, so reshape them to the matrices they represent.
     m0 = m0.reshape(-1, NUM_PCS)
     m1 = m1.reshape(-1, NUM_PCS)
 
-    # Iterate through a list of scaling factors alpha.
+    # Lookup in our cache the warped versions of the inputs. If not there, calculate
+    # them and add them to our cache first.
+    m0.flags.writeable = False
+    m0_id = hash(m0.tobytes())
+    if m0_id not in cache:
+        warped_m0s = {
+            alpha: time_lengthen_and_slice_matrix(m0, alpha) for alpha in WARPING_ALPHAS
+        }
+        cache[m0_id] = warped_m0s
+    else:
+        warped_m0s = cache[m0_id]
 
-    alphas_to_try = np.linspace(1.0, 1.8, 5)
+    m1.flags.writeable = False
+    m1_id = hash(m1.tobytes())
+    if m1_id not in cache:
+        warped_m1s = {
+            alpha: time_lengthen_and_slice_matrix(m1, alpha) for alpha in WARPING_ALPHAS
+        }
+        cache[m1_id] = warped_m1s
+    else:
+        warped_m1s = cache[m1_id]
+
+    # Iterate through a list of scaling factors alpha.
 
     min_dist_so_far = np.inf
 
-    for alpha in alphas_to_try:
+    for alpha in WARPING_ALPHAS:
         # Keep the first matrix the same but stretch the other matrix in time by a
         # factor of alpha (using linear interpolation), and take the distance between
         # the first matrix and the warped other matrix.
 
-        dist_0 = np.linalg.norm(m0 - time_lengthen_and_slice_matrix(m1, alpha))
+        dist_0 = np.linalg.norm(m0 - warped_m1s[alpha])
         # If this is the lowest distance we've seen, keep it.
         if dist_0 < min_dist_so_far:
             min_dist_so_far = dist_0
 
         # Do the same thing, but lengthen the first matrix instead.
 
-        dist_1 = np.linalg.norm(m1 - time_lengthen_and_slice_matrix(m0, alpha))
+        dist_1 = np.linalg.norm(m1 - warped_m0s[alpha])
         if dist_1 < min_dist_so_far:
             min_dist_so_far = dist_1
 
@@ -385,7 +407,10 @@ def plot_tSNE(
         # Transform the neural activity using our PCA model trained on all sessions.
         session_pca_model = session_pca_models[session_idx]
         session_trial_PCs = np.array(
-            [session_pca_model.transform(w) for w in session_trial_neural_activities_smoothed]
+            [
+                session_pca_model.transform(w)
+                for w in session_trial_neural_activities_smoothed
+            ]
         )
         # Take just the window starting soon after the go cue.
         session_trial_PCs_windowed = session_trial_PCs[
