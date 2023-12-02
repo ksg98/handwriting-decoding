@@ -35,8 +35,11 @@ REACTION_TIME_BINS = 10
 TRAINING_WINDOW_BINS = 150
 
 NUM_ELECTRODES = 192
+NUM_PCS = 15
 
 OUTPUTS_DIR = os.path.abspath("./outputs")
+
+c = {"count": 0}
 
 
 ########################################################################################
@@ -185,17 +188,6 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
                     X_test.append(trial_zscored_neural)
                     y_test.append(trial_label)
 
-    # Fit a PCA model (only on the training data).
-
-    print("Fitting PCA model ...")
-
-    pca_model = PCA().fit(np.concatenate(X_train))
-
-    # Get PCA-transformed data (all of training and test).
-    NUM_PCS = 15
-    X_train = np.array([pca_model.transform(w)[:, :NUM_PCS] for w in X_train])
-    X_test = np.array([pca_model.transform(w)[:, :NUM_PCS] for w in X_test])
-
     # Smooth the neural data over time.
     SMOOTHING_STDDEV = 3.0
     X_train = np.array(
@@ -205,7 +197,17 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
         [gaussian_filter1d(w, sigma=SMOOTHING_STDDEV, axis=0) for w in X_test]
     )
 
-    # Flatten each trial's neural data since the model operates on 1D vectors.
+    # Fit a PCA model (only on the training data).
+
+    print("Fitting PCA model ...")
+
+    pca_model = PCA(n_components=NUM_PCS).fit(np.concatenate(X_train))
+
+    # Get PCA-transformed data (all of training and test).
+    X_train = np.array([pca_model.transform(w) for w in X_train])
+    X_test = np.array([pca_model.transform(w) for w in X_test])
+
+    # Flatten the each trial's PCs so KNN can operate on 1D vectors.
     X_train = np.reshape(X_train, (X_train.shape[0], -1))
     X_test = np.reshape(X_test, (X_test.shape[0], -1))
 
@@ -224,6 +226,67 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
     print(f"y_test.shape: {y_test.shape}")
 
     return X_train, X_test, y_train, y_test
+
+
+def time_lengthen_and_slice_vector(y, alpha):
+    """"""
+    # Sample the series at a smaller interval than originally (alpha is expected to be
+    # >= 1 because we're lengthening).
+    t = np.arange(len(y))
+    new_y = np.interp(t / alpha, t, y)
+    # This new series has the same number of elements as the original but covers a
+    # smaller portion in time. If this new series is returned and treated as if the
+    # values correspond to the original time points, the original series has effectively
+    # been stretched and then sliced at its original time length.
+    return new_y
+
+
+def time_lengthen_and_slice_matrix(m, alpha):
+    """"""
+    # If each row is a time bin, each electrode's time series is a column. Iterate
+    # through the columns, lengthen each one.
+    cols = m.T
+    new_cols = np.array(
+        [time_lengthen_and_slice_vector(series, alpha) for series in cols]
+    )
+    new_m = new_cols.T
+    return new_m
+
+
+def dist_with_time_warp(m0, m1):
+    """"""
+    
+    c["count"] += 1
+    if c["count"] % 10000 == 0:
+        print(f"Have run dist_with_time_warp {c['count']} times")
+
+    # The args have to be vectors, so reshape them to the matrices they represent.
+    m0 = m0.reshape(-1, NUM_PCS)
+    m1 = m1.reshape(-1, NUM_PCS)
+
+    # Iterate through a list of scaling factors alpha.
+
+    alphas_to_try = np.linspace(1.0, 1.8, 5)
+
+    min_dist_so_far = np.inf
+
+    for alpha in alphas_to_try:
+        # Keep the first matrix the same but stretch the other matrix in time by a
+        # factor of alpha (using linear interpolation), and take the distance between
+        # the first matrix and the warped other matrix.
+
+        dist_0 = np.linalg.norm(m0 - time_lengthen_and_slice_matrix(m1, alpha))
+        # If this is the lowest distance we've seen, keep it.
+        if dist_0 < min_dist_so_far:
+            min_dist_so_far = dist_0
+
+        # Do the same thing, but lengthen the first matrix instead.
+
+        dist_1 = np.linalg.norm(m1 - time_lengthen_and_slice_matrix(m0, alpha))
+        if dist_1 < min_dist_so_far:
+            min_dist_so_far = dist_1
+
+    return min_dist_so_far
 
 
 def plot_confusion_matrix(y_test, y_pred_test, accuracy_str):
@@ -278,7 +341,9 @@ def run_multiple_KNN(
         print("Training k-nearest neighbors model ...")
 
         NUM_NEIGHBORS = 5
-        knn_model = KNeighborsClassifier(n_neighbors=NUM_NEIGHBORS)
+        knn_model = KNeighborsClassifier(
+            n_neighbors=NUM_NEIGHBORS, metric=dist_with_time_warp
+        )
         knn_model.fit(X_train, y_train)
 
         ## Evaluate the k-nearest neighbors model by calculating accuracy on the test

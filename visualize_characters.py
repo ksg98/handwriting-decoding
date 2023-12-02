@@ -39,6 +39,8 @@ CLASS_TO_CHAR_MAP = {idx: char for idx, char in enumerate(ALL_CHARS)}
 PRE_GO_CUE_BINS = 50
 POST_GO_CUE_BINS = 150
 
+NUM_PCS = 15
+
 OUTPUTS_DIR = os.path.abspath("./outputs")
 
 
@@ -67,16 +69,16 @@ def main():
         session_pca_models,
     ) = prepare_data(data_dicts)
 
-    ## Plot the PCs activity across trials, grouped by character to see patterns.
+    # ## Plot the PCs activity across trials, grouped by character to see patterns.
 
-    plot_PCs(
-        trial_neural_activities,
-        trial_labels,
-        trial_session_idxs,
-        trial_block_idxs,
-        session_pca_models,
-        save_plots,
-    )
+    # plot_PCs(
+    #     trial_neural_activities,
+    #     trial_labels,
+    #     trial_session_idxs,
+    #     trial_block_idxs,
+    #     session_pca_models,
+    #     save_plots,
+    # )
 
     ## Plot the trials projected into t-SNE space, to see if they're clustering well.
 
@@ -160,8 +162,11 @@ def prepare_data(data_dicts):
 
         # Fit a PCA model (only on this session) with which to transform z-scored neural
         # data.
-        session_pca_model = PCA()
-        session_pca_model.fit(zscored_neural_activity)
+        smoothed_zscored_neural_activity = gaussian_filter1d(
+            zscored_neural_activity, sigma=3.0, axis=0
+        )
+        session_pca_model = PCA(n_components=NUM_PCS)
+        session_pca_model.fit(smoothed_zscored_neural_activity)
         session_pca_models.append(session_pca_model)
 
         print(f"Creating labeled pairs for session {session_idx} ...")
@@ -223,14 +228,11 @@ def plot_PCs(
                 for neural_activities in session_trial_neural_activities
             ]
         )
-        session_trial_PCs_smoothed = np.array(
-            [gaussian_filter1d(w, sigma=3.0, axis=0) for w in session_trial_PCs]
-        )
-        session_trial_PCs_smoothed_by_char = {
+        session_trial_PCs_by_char = {
             char: np.array(
                 [
                     w
-                    for w, c in zip(session_trial_PCs_smoothed, session_trial_labels)
+                    for w, c in zip(session_trial_PCs, session_trial_labels)
                     if c == char
                 ]
             )
@@ -240,14 +242,14 @@ def plot_PCs(
         NUM_PCS_TO_PLOT = 3
 
         for char in ALL_CHARS[:5]:
-            if len(session_trial_PCs_smoothed_by_char[char]) == 0:
+            if len(session_trial_PCs_by_char[char]) == 0:
                 continue
 
             fig, axs = plt.subplots(1, NUM_PCS_TO_PLOT)
 
             for pc_idx, ax in enumerate(axs):
                 ax.imshow(
-                    session_trial_PCs_smoothed_by_char[char][:, :, pc_idx],
+                    session_trial_PCs_by_char[char][:, :, pc_idx],
                     cmap=colormaps["bwr"],
                     aspect=3,
                 )
@@ -275,6 +277,62 @@ def plot_PCs(
                 plt.close()
             else:
                 plt.show()
+
+
+def time_lengthen_and_slice_vector(y, alpha):
+    """"""
+    # Sample the series at a smaller interval than originally (alpha is expected to be
+    # >= 1 because we're lengthening).
+    t = np.arange(len(y))
+    new_y = np.interp(t / alpha, t, y)
+    # This new series has the same number of elements as the original but covers a
+    # smaller portion in time. If this new series is returned and treated as if the
+    # values correspond to the original time points, the original series has effectively
+    # been stretched and then sliced at its original time length.
+    return new_y
+
+
+def time_lengthen_and_slice_matrix(m, alpha):
+    """"""
+    # If each row is a time bin, each electrode's time series is a column. Iterate
+    # through the columns, lengthen each one.
+    cols = m.T
+    new_cols = np.array(
+        [time_lengthen_and_slice_vector(series, alpha) for series in cols]
+    )
+    new_m = new_cols.T
+    return new_m
+
+
+def dist_with_time_warp(m0, m1):
+    """"""
+    # The args have to be vectors, so reshape them to the matrices they represent.
+    m0 = m0.reshape(-1, NUM_PCS)
+    m1 = m1.reshape(-1, NUM_PCS)
+
+    # Iterate through a list of scaling factors alpha.
+
+    alphas_to_try = np.linspace(1.0, 1.8, 5)
+
+    min_dist_so_far = np.inf
+
+    for alpha in alphas_to_try:
+        # Keep the first matrix the same but stretch the other matrix in time by a
+        # factor of alpha (using linear interpolation), and take the distance between
+        # the first matrix and the warped other matrix.
+
+        dist_0 = np.linalg.norm(m0 - time_lengthen_and_slice_matrix(m1, alpha))
+        # If this is the lowest distance we've seen, keep it.
+        if dist_0 < min_dist_so_far:
+            min_dist_so_far = dist_0
+
+        # Do the same thing, but lengthen the first matrix instead.
+
+        dist_1 = np.linalg.norm(m1 - time_lengthen_and_slice_matrix(m0, alpha))
+        if dist_1 < min_dist_so_far:
+            min_dist_so_far = dist_1
+
+    return min_dist_so_far
 
 
 def plot_tSNE(
@@ -317,19 +375,21 @@ def plot_tSNE(
         ]
         session_trial_labels = trial_labels[trial_session_idxs == session_idx]
 
+        # Smooth the neural activity over time.
+        session_trial_neural_activities_smoothed = np.array(
+            [
+                gaussian_filter1d(w, sigma=3.0, axis=0)
+                for w in session_trial_neural_activities
+            ]
+        )
         # Transform the neural activity using our PCA model trained on all sessions.
         session_pca_model = session_pca_models[session_idx]
-        # session_trial_PCs = np.array(
-        #     [session_pca_model.transform(w) for w in session_trial_neural_activities]
-        # )
-        session_trial_PCs = session_trial_neural_activities
-        # Smooth the PCs over time.
-        session_trial_PCs_smoothed = np.array(
-            [gaussian_filter1d(w, sigma=3.0, axis=0) for w in session_trial_PCs]
+        session_trial_PCs = np.array(
+            [session_pca_model.transform(w) for w in session_trial_neural_activities_smoothed]
         )
         # Take just the window starting soon after the go cue.
-        session_trial_PCs_windowed = session_trial_PCs_smoothed[
-            :, PRE_GO_CUE_BINS + 10 : PRE_GO_CUE_BINS + 10 + POST_GO_CUE_BINS
+        session_trial_PCs_windowed = session_trial_PCs[
+            :, PRE_GO_CUE_BINS + 10 : PRE_GO_CUE_BINS + POST_GO_CUE_BINS
         ]
         # Flatten the PCs so tSNE can operate on 1D vectors.
         session_trial_PCs_flattened = np.reshape(
@@ -339,8 +399,10 @@ def plot_tSNE(
         ## The neural data is now transformed and separated by trial.
         ## Now fit a t-SNE model.
 
+        print("Fitting t-SNE model ...")
+
         PERPLEXITY = 7
-        tsne_model = TSNE(perplexity=PERPLEXITY)
+        tsne_model = TSNE(perplexity=PERPLEXITY, metric=dist_with_time_warp)
         trials_projected = tsne_model.fit_transform(session_trial_PCs_flattened)
 
         ## Plot the t-SNE-projected trials in 2D space, colored by character to see if
