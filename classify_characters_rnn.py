@@ -462,7 +462,7 @@ def plot_confusion_matrix(y_test, y_pred_test, accuracy_str):
 
 
 def run_multiple_RNN(
-    data_dicts, num_electrodes=None, num_train_trials=None, num_runs=1
+    data_dicts, num_electrodes=None, num_train_trials=None, num_runs=5
 ):
     """"""
 
