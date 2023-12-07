@@ -137,7 +137,7 @@ def organize_data(data_dicts, limit_electrodes=None, limit_train_trials=None):
             num_trials_in_block = sum(block_trial_mask)
             random_trial_idxs = list(range(num_trials_in_block))
             random.shuffle(random_trial_idxs)
-            train_end_idx = int(num_trials_in_block * 0.6)
+            train_end_idx = int(num_trials_in_block * 0.8)
             train_trial_idxs = random_trial_idxs[:train_end_idx]
             block_go_cue_bins = go_cue_bins[block_trial_mask]
             block_delay_cue_bins = delay_cue_bins[block_trial_mask]
